@@ -1,0 +1,12 @@
+# 文件: requirements.txt (最终HTTP版)
+
+# 核心库
+zeroconf
+fastapi
+uvicorn[standard]
+toml
+python-multipart
+
+# GUI库
+PySide6
+httpx

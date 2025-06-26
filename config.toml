@@ -1,0 +1,13 @@
+[service]
+name = "MyAwesomePC" # 你可以自定义你的设备名
+port = 8080         # API服务的端口
+
+[[shares]]
+name = "My Documents"
+path = "D:/test_file/documents" # 【重要】请修改为你电脑上一个真实存在的文件夹路径
+permissions = ["read", "write"]
+
+[[shares]]
+name = "Photos Read-Only"
+path = "D:/test_file/documents/photos"   # 【重要】请修改为你电脑上另一个真实存在的文件夹路径
+permissions = ["read"]
