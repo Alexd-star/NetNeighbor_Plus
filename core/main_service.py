@@ -1,45 +1,46 @@
+# 文件: core/main_service.py (最终确认版)
+
+import os
 import socket
 import uvicorn
-import threading  # 导入线程库
+import threading
 from .config import config as app_config
 from .discovery import DiscoveryService
-from .web_api import app
-from .tcp_server import run_tcp_server  # 导入TCP服务器启动函数
+from .web_api import app, manager
+from .tcp_server import run_tcp_server
+from .file_watcher import start_file_watcher
 
 
 def run_service():
-    """
-    启动所有后端服务，包括设备发现、HTTP API和TCP传输服务器。
-    """
     service_config = app_config['service']
     port = service_config['port']
-
     hostname = socket.gethostname()
     host_ip = socket.gethostbyname(hostname)
 
-    # 启动设备发现服务
-    # 我们需要在广播信息里告诉别人我们的TCP端口是多少
-    properties = {
-        'os': 'openKylin',
-        'user': 'testuser',
-        'tcp_port': str(8081)  # 将TCP端口作为属性广播出去
-    }
-    discovery = DiscoveryService(
-        host_ip=host_ip,
-        port=port,
-        service_name=service_config['name'],
-        service_properties=properties
-    )
+    properties = {'os': 'openKylin', 'user': 'testuser', 'tcp_port': str(8081)}
+    discovery = DiscoveryService(host_ip, port, service_config['name'], properties)
     discovery.start()
 
-    # 在一个独立的后台线程中启动TCP服务器
-    tcp_thread = threading.Thread(target=run_tcp_server)
-    tcp_thread.daemon = True
+    tcp_thread = threading.Thread(target=run_tcp_server, daemon=True)
     tcp_thread.start()
 
-    print(f"API服务器将在 http://{host_ip}:{port} 启动")
+    original_paths = [s['path'] for s in app_config.get('shares', [])]
+    normalized_paths = [os.path.normpath(p) for p in original_paths]
 
-    # 启动uvicorn（这个会阻塞主线程）
-    uvicorn.run(
-        app, host=host_ip, port=port, log_level="info"
-    )
+    if normalized_paths:
+        import asyncio
+        def on_change():
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    loop.call_soon_threadsafe(asyncio.create_task, manager.broadcast("refresh_files"))
+                else:
+                    asyncio.run(manager.broadcast("refresh_files"))
+            except RuntimeError:
+                asyncio.run(manager.broadcast("refresh_files"))
+
+        watcher_thread = threading.Thread(target=start_file_watcher, args=(normalized_paths, on_change), daemon=True)
+        watcher_thread.start()
+
+    print(f"API服务器将在 http://{host_ip}:{port} 启动")
+    uvicorn.run(app, host=host_ip, port=port, log_level="info")

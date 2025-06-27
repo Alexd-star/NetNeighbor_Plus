@@ -1,10 +1,41 @@
 import os
-from fastapi import FastAPI, HTTPException, UploadFile, File
+import asyncio
+from fastapi import FastAPI, HTTPException, UploadFile, File, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, FileResponse
 from .config import config
 from .discovery import online_devices
-
+from typing import List
 app = FastAPI()
+
+# --- 新增：一个连接管理器，用于管理所有连接到WebSocket的客户端 ---
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        self.active_connections.remove(websocket)
+
+    async def broadcast(self, message: str):
+        for connection in self.active_connections:
+            await connection.send_text(message)
+
+manager = ConnectionManager()
+app = FastAPI()
+
+# --- 新增：WebSocket端点 ---
+@app.websocket("/ws/events")
+async def websocket_endpoint(websocket: WebSocket):
+    await manager.connect(websocket)
+    try:
+        while True:
+            # 等待客户端消息（在这个应用中我们不需要，但必须有这个循环来保持连接）
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
 
 def get_safe_path(share_name: str, sub_path: str = "/") -> str:
     target_share = next((s for s in config.get("shares", []) if s["name"] == share_name), None)

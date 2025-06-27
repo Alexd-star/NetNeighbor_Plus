@@ -14,6 +14,8 @@ from .settings_window import SettingsWindow
 from .api_client import ApiClient, UploadStreamer # 导入新的UploadStreamer
 import threading
 import time
+import websockets
+import asyncio
 
 
 class WorkerThread(QThread):
@@ -105,6 +107,26 @@ class WorkerThread(QThread):
 
         self.finished.emit(f"文件上传成功！")
 
+# --- 新增：用于在后台监听WebSocket的线程 ---
+class WebSocketClientThread(QThread):
+    message_received = Signal(str)
+
+    def __init__(self, uri):
+        super().__init__()
+        self.uri = uri
+
+    async def listen(self):
+        async for websocket in websockets.connect(self.uri):
+            try:
+                async for message in websocket:
+                    self.message_received.emit(message)
+            except websockets.ConnectionClosed:
+                print("WebSocket连接已关闭，正在尝试重连...")
+                await asyncio.sleep(5)
+                continue
+
+    def run(self):
+        asyncio.run(self.listen())
 
 class MainWindow(QMainWindow):
     """
@@ -127,6 +149,7 @@ class MainWindow(QMainWindow):
         self.setup_window()
         self.setup_ui()
         self.setup_timers()
+        self.setup_websocket()
 
     def get_my_ip(self):
         try:
@@ -333,3 +356,22 @@ class MainWindow(QMainWindow):
             self.file_table_widget.setItem(row, 0, QTableWidgetItem(file_info['name']))
             self.file_table_widget.setItem(row, 1, QTableWidgetItem("文件夹" if file_info['is_dir'] else "文件"))
             self.file_table_widget.setItem(row, 2, QTableWidgetItem(str(file_info['size'])))
+    # --- 新增：WebSocket设置和处理器 ---
+    def setup_websocket(self):
+        ws_uri = f"ws://{self.get_my_ip()}:{self.config_data['service']['port']}/ws/events"
+        self.ws_thread = WebSocketClientThread(ws_uri)
+        self.ws_thread.message_received.connect(self.handle_websocket_message)
+        self.ws_thread.start()
+
+    def handle_websocket_message(self, message: str):
+        print(f"收到WebSocket消息: {message}")
+        if message == "refresh_files":
+            # 收到刷新指令后，直接调用我们的文件列表刷新函数
+            self.refresh_current_file_view()
+
+    # 别忘了在关闭窗口时也停止线程
+    def closeEvent(self, event):
+        if self.ws_thread.isRunning():
+            self.ws_thread.quit()
+            self.ws_thread.wait()
+        super().closeEvent(event)
