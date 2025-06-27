@@ -1,4 +1,4 @@
-# 文件: requirements.txt (最终HTTP版)
+# requirements.txt (最终版)
 
 # 核心库
 zeroconf
@@ -6,6 +6,8 @@ fastapi
 uvicorn[standard]
 toml
 python-multipart
+websockets  # 新增：用于WebSocket通信
+watchdog    # 新增：用于文件系统监控
 
 # GUI库
 PySide6

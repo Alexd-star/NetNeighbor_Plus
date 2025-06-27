@@ -1,16 +1,26 @@
 import os
 import socket
 import json
+import copy
 from PySide6.QtWidgets import (QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QListWidget, QTableWidget,
                                QAbstractItemView, QHeaderView, QListWidgetItem, QTableWidgetItem,
-                               QMenu, QMessageBox, QFileDialog, QPushButton, QLineEdit, QProgressDialog)
+                               QMenu, QMessageBox, QFileDialog, QPushButton, QLineEdit, QProgressDialog,
+                               QGroupBox, QLabel)
 from PySide6.QtCore import QTimer, Qt, QThread, Signal
 from PySide6.QtGui import QAction
 from typing import Optional
 from .api_client import ApiClient
+from .settings_window import SettingsWindow
+from .api_client import ApiClient, UploadStreamer # 导入新的UploadStreamer
+import threading
+import time
 
 
 class WorkerThread(QThread):
+    """
+    用于在后台执行耗时任务（如文件传输）的工作线程，避免UI卡顿。
+    通过信号(Signal)与主线程通信来更新进度和报告结果。
+    """
     progress = Signal(int)
     finished = Signal(str)
     error = Signal(str)
@@ -22,12 +32,16 @@ class WorkerThread(QThread):
 
     def run(self):
         try:
+            # --- 【核心修正】让工作线程能正确识别所有任务类型 ---
             if self.task_type == "download_http":
                 self._run_download_http()
             elif self.task_type == "download_tcp":
                 self._run_download_tcp()
             elif self.task_type == "upload":
                 self._run_upload()
+            else:
+                # 如果传来一个未知的任务类型，就发出错误信号
+                self.error.emit(f"未知的任务类型: {self.task_type}")
         except Exception as e:
             self.error.emit(str(e))
 
@@ -69,20 +83,41 @@ class WorkerThread(QThread):
         self.finished.emit(f"文件 '{os.path.basename(save_path)}' (TCP高速) 下载完成！")
 
     def _run_upload(self):
-        peer_client, share_name, dest_path, local_file_path = self.kwargs['peer_client'], self.kwargs['share_name'], \
-                                                              self.kwargs['dest_path'], self.kwargs['local_file_path']
-        self.progress.emit(0)
-        peer_client.upload_file_stream(share_name, dest_path, local_file_path)
-        self.progress.emit(100)
+        # --- 【核心修正】使用新的、像文件一样的UploadStreamer ---
+        peer_client = self.kwargs['peer_client']
+        share_name = self.kwargs['share_name']
+        dest_path = self.kwargs['dest_path']
+        local_file_path = self.kwargs['local_file_path']
+
+        # 1. 创建一个回调函数，用于更新进度
+        last_emitted_progress = -1
+
+        def progress_callback(p):
+            nonlocal last_emitted_progress
+            if p > last_emitted_progress:
+                self.progress.emit(p)
+                last_emitted_progress = p
+
+        # 2. 创建Uploader实例，并把回调函数传给它
+        with UploadStreamer(local_file_path, progress_callback=progress_callback) as uploader:
+            # 3. 直接调用上传方法
+            peer_client.upload_file_stream(share_name, dest_path, uploader)
+
         self.finished.emit(f"文件上传成功！")
 
 
 class MainWindow(QMainWindow):
+    """
+    应用程序的主窗口类。
+    """
+
     def __init__(self):
         super().__init__()
-        self.api_client = ApiClient("http://192.168.182.206:8080")
+        from core.config import config as app_config
+        self.config_data = app_config
 
-        # --- 【核心修正】在这里完整地初始化所有状态变量 ---
+        self.api_client = ApiClient(f"http://{self.get_my_ip()}:{self.config_data['service']['port']}")
+
         self.online_devices_data = {}
         self.active_peer_client: Optional[ApiClient] = None
         self.active_share_name: Optional[str] = None
@@ -93,6 +128,14 @@ class MainWindow(QMainWindow):
         self.setup_ui()
         self.setup_timers()
 
+    def get_my_ip(self):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.connect(("8.8.8.8", 80))
+                return s.getsockname()[0]
+        except Exception:
+            return "127.0.0.1"
+
     def setup_window(self):
         self.setWindowTitle("邻里+ (NetNeighbor Plus)")
         self.setGeometry(100, 100, 1200, 700)
@@ -100,15 +143,37 @@ class MainWindow(QMainWindow):
     def setup_ui(self):
         central_widget = QWidget();
         self.setCentralWidget(central_widget)
-        main_layout = QHBoxLayout();
+        main_layout = QVBoxLayout();
         central_widget.setLayout(main_layout)
+
+        menu_bar = self.menuBar()
+        file_menu = menu_bar.addMenu("文件")
+        settings_action = QAction("设置...", self)
+        settings_action.triggered.connect(self.open_settings)
+        file_menu.addAction(settings_action)
+
+        my_status_box = QGroupBox("本机状态")
+        my_status_layout = QVBoxLayout();
+        my_status_box.setLayout(my_status_layout)
+
+        self.device_name_label = QLabel(f"我的设备名: {self.config_data['service']['name']}")
+        my_ip_label = QLabel(f"我的IP地址: {self.get_my_ip()}:{self.config_data['service']['port']}")
+        my_status_layout.addWidget(self.device_name_label)
+        my_status_layout.addWidget(my_ip_label)
+        main_layout.addWidget(my_status_box)
+
+        interaction_layout = QHBoxLayout()
+        main_layout.addLayout(interaction_layout, stretch=1)
+
         self.device_list_widget = QListWidget();
         self.device_list_widget.setFixedWidth(250)
         self.device_list_widget.itemClicked.connect(self.handle_device_click)
-        main_layout.addWidget(self.device_list_widget)
+        interaction_layout.addWidget(self.device_list_widget)
+
         right_panel, right_layout = QWidget(), QVBoxLayout();
-        right_panel.setLayout(right_layout);
-        main_layout.addWidget(right_panel)
+        right_panel.setLayout(right_layout)
+        interaction_layout.addWidget(right_panel)
+
         toolbar_layout = QHBoxLayout()
         self.back_button = QPushButton("返回上一级");
         self.back_button.clicked.connect(self.go_back_directory)
@@ -120,6 +185,7 @@ class MainWindow(QMainWindow):
         toolbar_layout.addWidget(self.current_path_label);
         toolbar_layout.addWidget(self.upload_button)
         right_layout.addLayout(toolbar_layout)
+
         self.file_table_widget = QTableWidget();
         self.file_table_widget.setColumnCount(3)
         self.file_table_widget.setHorizontalHeaderLabels(["文件名", "类型", "大小 (Bytes)"])
@@ -130,6 +196,13 @@ class MainWindow(QMainWindow):
         self.file_table_widget.customContextMenuRequested.connect(self.show_file_context_menu)
         self.file_table_widget.itemDoubleClicked.connect(self.on_item_double_clicked)
         right_layout.addWidget(self.file_table_widget)
+
+    def open_settings(self):
+        dialog = SettingsWindow(self.config_data, self)
+        if dialog.exec() == QDialog.Accepted:
+            from core.config import load_config
+            self.config_data = load_config()
+            self.device_name_label.setText(f"我的设备名: {self.config_data['service']['name']}")
 
     def setup_timers(self):
         self.peer_update_timer = QTimer(self);
@@ -215,24 +288,21 @@ class MainWindow(QMainWindow):
         if not self.active_peer_client or not self.active_share_name: return
         current_path = "/" + "/".join(self.active_path_stack)
         self.current_path_label.setText(current_path)
-        files = self.active_peer_client.get_files(self.active_share_name, current_path)
-        self.update_file_table(files)
+        self.update_file_table(self.active_peer_client.get_files(self.active_share_name, current_path))
 
     def update_device_list(self):
         if (peers := self.api_client.get_peers()) is None: return
         self.online_devices_data = peers
-        current_item = self.device_list_widget.currentItem()
-        current_selection_name = current_item.data(100) if current_item else None
+        current_selection_name = self.device_list_widget.currentItem().data(
+            100) if self.device_list_widget.currentItem() else None
         self.device_list_widget.clear()
         item_to_reselect = None
         for full_service_name, data in peers.items():
             list_item = QListWidgetItem(full_service_name.split('._netneighbor._tcp.local.')[0])
             list_item.setData(100, full_service_name)
             self.device_list_widget.addItem(list_item)
-            if full_service_name == current_selection_name:
-                item_to_reselect = list_item
-        if item_to_reselect:
-            self.device_list_widget.setCurrentItem(item_to_reselect)
+            if full_service_name == current_selection_name: item_to_reselect = list_item
+        if item_to_reselect: self.device_list_widget.setCurrentItem(item_to_reselect)
         if self.active_peer_client is None and self.device_list_widget.count() > 0:
             first_item = self.device_list_widget.item(0)
             self.device_list_widget.setCurrentItem(first_item)
@@ -244,9 +314,7 @@ class MainWindow(QMainWindow):
         device_data = self.online_devices_data.get(service_name)
         if not device_data: return
 
-        # 检查是否点击的是当前已激活的设备
-        if self.active_peer_client and self.active_peer_client.base_url.find(device_data['address']) != -1:
-            return
+        if self.active_peer_client and self.active_peer_client.base_url.find(device_data['address']) != -1: return
 
         self.active_path_stack = []
         self.active_peer_client = ApiClient(f"http://{device_data['address']}:{device_data['port']}")
