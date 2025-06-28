@@ -66,7 +66,13 @@ class AppController(QObject):
 
         print("正在启动所有后台服务...")
 
-        properties = {'os': 'openKylin', 'user': 'testuser', 'tcp_port': str(self.tcp_port)}
+        # 【功能点3】增加设备类型字段
+        properties = {
+            'os': 'openKylin',
+            'user': 'testuser',
+            'tcp_port': str(self.tcp_port),
+            'dev_type': 'PC'
+        }
         self.discovery_service = DiscoveryService(host_ip, self.port, self.service_name, properties)
         self.discovery_service.start()
 
@@ -76,7 +82,6 @@ class AppController(QObject):
 
         self._start_file_watcher()
 
-        # 【修复】将controller实例存入FastAPI应用状态，方便API接口访问
         fastapi_app.state.controller = self
 
         uvicorn_config = uvicorn.Config(fastapi_app, host="0.0.0.0", port=self.port, log_level="info")
@@ -123,9 +128,10 @@ class AppController(QObject):
         from core.web_api import manager
 
         def on_change():
+            # 【BUG修复】将 event_data 定义移到 try 块之外
+            event_data = {"event": "refresh_files"}
             try:
                 loop = asyncio.get_event_loop_policy().get_event_loop()
-                event_data = {"event": "refresh_files"}
                 if loop.is_running():
                     loop.call_soon_threadsafe(asyncio.create_task, manager.broadcast(json.dumps(event_data)))
                 else:
@@ -138,7 +144,6 @@ class AppController(QObject):
         self.watcher_thread = threading.Thread(target=start_file_watcher,
                                                args=(normalized_paths, on_change, self.watcher_stop_event), daemon=True)
         self.watcher_thread.start()
-        print(f"文件监视器已启动，正在监视: {normalized_paths}")
 
     def restart_file_watcher(self):
         print("正在请求重启文件监视器...")

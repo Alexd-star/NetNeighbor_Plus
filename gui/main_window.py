@@ -1,4 +1,4 @@
-# 文件: gui/main_window.py
+# 文件: gui/main_window.py (优化)
 import os
 import socket
 import json
@@ -116,7 +116,8 @@ class WorkerThread(QThread):
             downloaded_size = 0
             with open(save_path, 'wb') as f:
                 while downloaded_size < total_size:
-                    chunk = s.recv(4096 * 1024)
+                    # 【性能优化】调整TCP缓冲区大小
+                    chunk = s.recv(64 * 1024)  # 64KB chunk
                     if not chunk: break
                     f.write(chunk)
                     downloaded_size += len(chunk)
@@ -188,6 +189,16 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("邻里+ (NetNeighbor Plus)");
         self.setGeometry(100, 100, 1200, 700)
         self.setWindowIcon(self.style().standardIcon(QStyle.SP_ComputerIcon))
+        # 【修复点2】实现窗口居中
+        self.resize(1200, 700)
+        try:
+            center_point = self.screen().availableGeometry().center()
+            frame_geometry = self.frameGeometry()
+            frame_geometry.moveCenter(center_point)
+            self.move(frame_geometry.topLeft())
+        except AttributeError:
+            # 在某些环境下 self.screen() 可能失败，提供一个回退方案
+            self.setGeometry(100, 100, 1200, 700)
 
     def setup_ui(self):
         central_widget = QWidget()
@@ -231,7 +242,7 @@ class MainWindow(QMainWindow):
         my_shares_header_layout = QHBoxLayout()
         my_shares_header_layout.addWidget(QLabel("<h4>本机共享</h4>"))
         my_shares_header_layout.addStretch()
-        self.manage_shares_button = QPushButton("添加/管理共享")
+        self.manage_shares_button = QPushButton("管理...")
         self.manage_shares_button.setToolTip("添加、移除或修改本机共享文件夹")
         self.manage_shares_button.clicked.connect(self.open_settings)
         self.manage_shares_button.setObjectName("ManageButton")
@@ -414,7 +425,7 @@ class MainWindow(QMainWindow):
                           "<b>邻里+ (NetNeighbor Plus)</b><br><br>"
                           "一个基于 Python 和 PySide6 的局域网文件共享工具。<br>"
                           "旨在提供一个简单、轻量、跨平台的本地网络文件传输解决方案。<br><br>"
-                          "版本: 1.3.0 (UX Enhanced)")
+                          "版本: 1.4.0 (Performance & UX)")
 
     def add_log_message(self, message: str, icon: str = "ℹ️"):
         from datetime import datetime
@@ -442,7 +453,8 @@ class MainWindow(QMainWindow):
                 elif event == "shares_updated":
                     device_name = data.get("device_name")
                     self.add_log_message(f"收到通知：设备 {device_name} 的共享列表已更新。", "🔄")
-                    self.handle_device_click(self.device_list_widget.currentItem(), force_refresh=True)
+                    if self.device_list_widget.currentItem():
+                        self.handle_device_click(self.device_list_widget.currentItem(), force_refresh=True)
                 elif event == "refresh_files":
                     self.add_log_message("当前查看的设备文件系统变更，自动刷新...", "🔄")
                     self.refresh_current_file_view()
@@ -608,33 +620,53 @@ class MainWindow(QMainWindow):
         self.update_file_table(files)
 
     def update_device_list(self):
+        """【性能优化】使用增量更新来修改设备列表，避免闪烁和性能问题"""
         if not self.api_client: return
 
         peers = self.api_client.get_peers()
-        if peers is None:
-            self.online_devices_data = {}
-        else:
+        new_online_data = {}
+        if peers:
             my_full_service_name = f"{self.controller.service_name}._netneighbor._tcp.local."
-            self.online_devices_data = {name: data for name, data in peers.items() if name != my_full_service_name}
+            new_online_data = {name: data for name, data in peers.items() if name != my_full_service_name}
 
+        current_service_names = set(self.online_devices_data.keys())
+        new_service_names = set(new_online_data.keys())
+
+        # 更新数据模型
+        self.online_devices_data = new_online_data
         self.status_bar_label.setText(f"发现 {len(self.online_devices_data)} 个在线设备。")
 
-        active_peer_service_name = None
-        if self.device_list_widget.currentItem():
-            active_peer_service_name = self.device_list_widget.currentItem().data(100)
+        # 计算差异
+        to_add = new_service_names - current_service_names
+        to_remove = current_service_names - new_service_names
 
-        if active_peer_service_name and active_peer_service_name not in self.online_devices_data:
-            self.add_log_message(f"当前查看的设备 '{active_peer_service_name.split('.')[0]}' 已下线。", "⚠️")
-            self.clear_active_peer_view()
+        # 从UI中移除下线的设备
+        items_to_remove = []
+        for i in range(self.device_list_widget.count()):
+            item = self.device_list_widget.item(i)
+            service_name = item.data(100)
+            if service_name in to_remove:
+                items_to_remove.append(item)
+                # 检查下线的是否是当前活动设备
+                if self.active_peer_client and self.active_peer_client.base_url.endswith(
+                        str(self.online_devices_data.get(service_name, {}).get('port', ''))):
+                    self.add_log_message(f"当前查看的设备 '{service_name.split('.')[0]}' 已下线。", "⚠️")
+                    self.clear_active_peer_view()
 
-        self.device_list_widget.clear()
-        for full_service_name, data in sorted(self.online_devices_data.items()):
-            display_name = full_service_name.split('._netneighbor._tcp.local.')[0]
-            list_item = QListWidgetItem(self.style().standardIcon(QStyle.SP_DriveNetIcon), display_name)
-            list_item.setData(100, full_service_name)
+        for item in items_to_remove:
+            self.device_list_widget.takeItem(self.device_list_widget.row(item))
+
+        # 向UI中添加新上线的设备
+        for service_name in sorted(list(to_add)):
+            data = self.online_devices_data[service_name]
+            display_name = service_name.split('._netneighbor._tcp.local.')[0]
+            dev_type = data.get("properties", {}).get("dev_type", "未知设备")
+
+            list_item = QListWidgetItem()
+            list_item.setText(f"{display_name}\n  类型: {dev_type}")
+            list_item.setIcon(self.style().standardIcon(QStyle.SP_DriveNetIcon))
+            list_item.setData(100, service_name)
             self.device_list_widget.addItem(list_item)
-            if full_service_name == active_peer_service_name:
-                self.device_list_widget.setCurrentItem(list_item)
 
     def clear_active_peer_view(self):
         self.active_peer_client = None
@@ -650,7 +682,6 @@ class MainWindow(QMainWindow):
 
         self.right_stack.setCurrentWidget(self.welcome_page)
 
-        # 当没有选中任何设备时，也应该清除状态栏的延迟信息
         self.status_bar_label.setText("就绪")
 
     def handle_device_click(self, clicked_item: QListWidgetItem, force_refresh: bool = False):
@@ -681,8 +712,8 @@ class MainWindow(QMainWindow):
         elif self.active_peer_client.base_url != new_base_url:
             self.active_peer_client = ApiClient(new_base_url)
 
-        self.add_log_message(f"已连接到设备: {clicked_item.text()}", "🔌")
-        self.measure_ping(self.active_peer_client, clicked_item.text())
+        self.add_log_message(f"已连接到设备: {clicked_item.text().splitlines()[0]}", "🔌")
+        self.measure_ping(self.active_peer_client, clicked_item.text().splitlines()[0])
 
         self.share_selector_combo.blockSignals(True)
         self.share_selector_combo.clear()
