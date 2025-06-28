@@ -24,12 +24,21 @@ class UploadStreamer:
 class ApiClient:
     def __init__(self, base_url: str):
         self.base_url = base_url
-        # 增加超时配置，防止UI卡死
         self.client = httpx.Client(timeout=10.0)
+
+    # 【修复】新增调用“通知”API的方法
+    def notify_shares_changed(self):
+        try:
+            # 使用POST请求，更符合RESTful风格
+            response = self.client.post(f"{self.base_url}/api/v1/internal/notify_shares_changed")
+            response.raise_for_status()
+            return True
+        except (httpx.RequestError, httpx.HTTPStatusError) as e:
+            print(f"Error notifying peers of share change: {e}")
+            return False
 
     def get_ping(self) -> bool:
         try:
-            # 使用较短的超时进行ping测试
             response = self.client.get(f"{self.base_url}/api/v1/ping", timeout=2.0)
             return response.status_code == 200
         except (httpx.RequestError, httpx.HTTPStatusError):
@@ -67,14 +76,12 @@ class ApiClient:
     def download_file_stream(self, share_name: str, file_path: str):
         url = f"{self.base_url}/api/v1/download/{share_name}"
         params = {"file_path": file_path}
-        # 对于下载，使用流式请求并设置更长的超时
         return self.client.stream("GET", url, params=params, timeout=60.0)
 
     def upload_file_stream(self, share_name: str, dest_path: str, uploader: UploadStreamer):
         url = f"{self.base_url}/api/v1/upload/{share_name}"
         params = {"dest_path": dest_path}
         files = {'file': (os.path.basename(uploader.file_path), uploader, 'application/octet-stream')}
-        # 上传可能需要很长时间，不设置超时
         response = self.client.post(url, params=params, files=files, timeout=None)
         response.raise_for_status()
         return response.json()

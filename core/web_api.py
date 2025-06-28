@@ -1,7 +1,8 @@
-# 文件: core/web_api.py (修复)
+# 文件: core/web_api.py
 import os
+import json
 import asyncio
-from fastapi import FastAPI, HTTPException, UploadFile, File, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, UploadFile, File, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import JSONResponse, FileResponse
 from typing import List
 from .config_loader import get_shares
@@ -9,14 +10,25 @@ from .discovery import online_devices
 
 
 class ConnectionManager:
-    def __init__(self): self.active_connections: List[WebSocket] = []
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
 
-    async def connect(self, websocket: WebSocket): await websocket.accept(); self.active_connections.append(websocket)
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept(); self.active_connections.append(websocket)
 
-    def disconnect(self, websocket: WebSocket): self.active_connections.remove(websocket)
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
 
     async def broadcast(self, message: str):
-        for connection in self.active_connections: await connection.send_text(message)
+        # 创建一个当前连接的副本进行迭代，防止在迭代时列表被修改
+        connections = list(self.active_connections)
+        for connection in connections:
+            try:
+                await connection.send_text(message)
+            except Exception:
+                # 如果发送失败（例如连接已意外断开），则将其从主列表中安全地移除
+                self.disconnect(connection)
 
 
 manager = ConnectionManager()
@@ -32,9 +44,34 @@ async def ping():
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     try:
-        while True: await websocket.receive_text()
+        while True:
+            # 等待客户端消息，如果不需要处理可以留空，或者增加一个心跳机制
+            await websocket.receive_text()
     except WebSocketDisconnect:
         manager.disconnect(websocket)
+
+
+@app.post("/api/v1/internal/notify_shares_changed")
+async def notify_shares_changed(request: Request):
+    """
+    一个内部端点，由客户端在更改设置后调用自己，
+    以触发向所有其他连接到此设备的对等方广播“共享列表已更新”的事件。
+    """
+    try:
+        # 从应用状态中获取controller实例
+        controller = request.app.state.controller
+        device_name = controller.device_name
+        service_name = controller.service_name
+
+        # 向所有连接到本机的客户端广播事件
+        await manager.broadcast(json.dumps({
+            "event": "shares_updated",
+            "device_name": device_name,
+            "service_name": service_name
+        }))
+        return {"status": "ok", "message": "Broadcast for share update sent."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to send broadcast: {e}")
 
 
 def get_safe_path(share_name: str, sub_path: str = "/") -> str:
@@ -44,17 +81,12 @@ def get_safe_path(share_name: str, sub_path: str = "/") -> str:
 
     base_path = os.path.abspath(target_share["path"])
 
-    # 【修复2】对子路径处理进行加固
     if sub_path is None or sub_path.strip() in ['/', '']:
-        # 如果是请求根目录，直接返回基础路径
         return base_path
 
-    # 对于非根目录的请求，进行规范化和安全检查
     safe_sub_path = os.path.normpath(sub_path.lstrip('/\\'))
 
-    # 再次检查，防止 '..' 或 '.' 等特殊情况
     if safe_sub_path.startswith('..') or safe_sub_path == '.':
-        # 如果清理后路径变为无效或有问题的，视为请求根目录
         return base_path
 
     full_path = os.path.join(base_path, safe_sub_path)
@@ -66,7 +98,8 @@ def get_safe_path(share_name: str, sub_path: str = "/") -> str:
 
 
 @app.get("/api/v1/peers")
-def get_peers(): return JSONResponse(content=online_devices)
+def get_peers():
+    return JSONResponse(content=online_devices)
 
 
 @app.get("/api/v1/shares")
