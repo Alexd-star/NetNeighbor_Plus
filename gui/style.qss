@@ -18,13 +18,14 @@ QGroupBox {
 QGroupBox::title {
     subcontrol-origin: margin;
     subcontrol-position: top left;
-    padding: 0 5px;
-    left: 10px;
+}
+
+#StatusGroupBox {
+    margin-top: 18px;
 }
 
 #StatusGroupBox::title {
-    top: -0.1em;
-    padding: 0px 0px;
+    left: 0px;
 }
 
 QListWidget {

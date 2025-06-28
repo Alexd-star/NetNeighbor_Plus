@@ -8,11 +8,6 @@ name = "Photos Read-Only"
 path = "D:/test_file/documents/photos"
 permissions = [ "read",]
 
-[[shares]]
-name = "竞赛活动"
-path = "D:\\Aria 学习\\研究生\\竞赛活动"
-permissions = [ "write", "read",]
-
 [service]
 name = "MyAwesomePC"
 port = 8080
