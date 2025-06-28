@@ -71,6 +71,16 @@ QTextEdit {
     color: #444;
 }
 
+#ManageButton {
+    padding: 4px 10px;
+    font-size: 9pt;
+    font-weight: normal;
+    background-color: #007bff;
+}
+#ManageButton:hover {
+    background-color: #0056b3;
+}
+
 QPushButton {
     background-color: #007bff;
     color: white;
@@ -121,4 +131,8 @@ QStatusBar {
 
 QStatusBar::item {
     border: none;
+}
+
+h4 {
+    margin-bottom: 5px;
 }

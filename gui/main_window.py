@@ -1,4 +1,4 @@
-# 文件: gui/main_window.py (修复)
+# 文件: gui/main_window.py
 import os
 import socket
 import json
@@ -11,9 +11,9 @@ import math
 from PySide6.QtWidgets import (QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QListWidget, QTableWidget,
                                QAbstractItemView, QHeaderView, QListWidgetItem, QTableWidgetItem,
                                QMenu, QMessageBox, QFileDialog, QPushButton, QLineEdit, QProgressDialog,
-                               QGroupBox, QLabel, QComboBox, QTextEdit, QStatusBar, QStyle)
+                               QGroupBox, QLabel, QComboBox, QTextEdit, QStatusBar, QStyle, QStackedWidget)
 from PySide6.QtCore import QTimer, Qt, QThread, Signal
-from PySide6.QtGui import QAction, QIcon
+from PySide6.QtGui import QAction, QIcon, QFont
 from typing import Optional
 from .api_client import ApiClient, UploadStreamer
 from .settings_window import SettingsWindow
@@ -60,7 +60,7 @@ class WebSocketClientThread(QThread):
         print(f"正在请求WebSocket ({self.source}) 线程停止...")
         self._is_running = False
         self.quit()
-        self.wait(2000)
+        self.wait(1000)
 
 
 class WorkerThread(QThread):
@@ -210,11 +210,9 @@ class MainWindow(QMainWindow):
         my_status_layout = QHBoxLayout(my_status_box)
         self.device_name_label = QLabel(f"<b>设备名:</b> {self.controller.device_name}")
         my_ip_label = QLabel(f"<b>IP地址:</b> {self.my_ip}:{self.controller.port}")
-
         my_status_layout.addWidget(self.device_name_label)
         my_status_layout.addStretch()
         my_status_layout.addWidget(my_ip_label)
-
         main_layout.addWidget(my_status_box)
 
         interaction_layout = QHBoxLayout()
@@ -230,10 +228,20 @@ class MainWindow(QMainWindow):
         self.device_list_widget.itemClicked.connect(self.handle_device_click)
         left_panel_layout.addWidget(self.device_list_widget, stretch=3)
 
-        left_panel_layout.addWidget(QLabel("<h4>本机共享</h4>"))
+        my_shares_header_layout = QHBoxLayout()
+        my_shares_header_layout.addWidget(QLabel("<h4>本机共享</h4>"))
+        my_shares_header_layout.addStretch()
+        self.manage_shares_button = QPushButton("添加/管理共享")
+        self.manage_shares_button.setToolTip("添加、移除或修改本机共享文件夹")
+        self.manage_shares_button.clicked.connect(self.open_settings)
+        self.manage_shares_button.setObjectName("ManageButton")
+        my_shares_header_layout.addWidget(self.manage_shares_button)
+        left_panel_layout.addLayout(my_shares_header_layout)
+
         self.my_shares_list_widget = QListWidget()
-        self.my_shares_list_widget.setToolTip(
-            "这是你本机当前正在共享的文件夹列表。\n在'文件->设置'中修改后会在这里更新。")
+        self.my_shares_list_widget.setToolTip("右键点击可移除共享")
+        self.my_shares_list_widget.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.my_shares_list_widget.customContextMenuRequested.connect(self.show_my_shares_context_menu)
         left_panel_layout.addWidget(self.my_shares_list_widget, stretch=2)
 
         left_panel_layout.addWidget(QLabel("<h4>事件日志</h4>"))
@@ -242,15 +250,22 @@ class MainWindow(QMainWindow):
         left_panel_layout.addWidget(self.log_text_edit, stretch=2)
         interaction_layout.addWidget(left_panel_widget)
 
-        right_panel = QWidget()
-        right_layout = QVBoxLayout(right_panel)
+        self.right_stack = QStackedWidget()
+        interaction_layout.addWidget(self.right_stack, stretch=1)
+
+        self.welcome_page = self.create_welcome_page()
+
+        self.file_browser_page = QWidget()
+        right_layout = QVBoxLayout(self.file_browser_page)
         right_layout.setContentsMargins(10, 10, 0, 0)
-        interaction_layout.addWidget(right_panel, stretch=1)
+
+        self.right_stack.addWidget(self.welcome_page)
+        self.right_stack.addWidget(self.file_browser_page)
 
         toolbar_layout = QHBoxLayout()
         self.share_selector_combo = QComboBox()
-        self.share_selector_combo.setPlaceholderText("选择共享文件夹")
-        self.share_selector_combo.setMinimumWidth(180)
+        self.share_selector_combo.setPlaceholderText("第2步: 选择共享")
+        self.share_selector_combo.setMinimumWidth(200)
         self.share_selector_combo.currentIndexChanged.connect(self.handle_share_selection_change)
 
         self.back_button = QPushButton(self.back_icon, "返回")
@@ -284,15 +299,88 @@ class MainWindow(QMainWindow):
         self.file_table_widget.verticalHeader().setVisible(False)
         right_layout.addWidget(self.file_table_widget)
 
+        self.right_stack.setCurrentWidget(self.welcome_page)
+
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
         self.status_bar_label = QLabel("正在初始化...")
         self.status_bar.addWidget(self.status_bar_label, 1)
 
+    def create_welcome_page(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setAlignment(Qt.AlignCenter)
+
+        welcome_label = QLabel("欢迎使用 邻里+")
+        font = QFont();
+        font.setPointSize(24);
+        font.setBold(True)
+        welcome_label.setFont(font)
+        welcome_label.setAlignment(Qt.AlignCenter)
+
+        step1_label = QLabel("<b>第1步:</b> 从左侧列表中选择一个在线设备")
+        step1_label.setAlignment(Qt.AlignCenter)
+
+        step2_label = QLabel("<b>第2步:</b> 选择该设备的共享文件夹即可开始浏览")
+        step2_label.setAlignment(Qt.AlignCenter)
+
+        layout.addStretch()
+        layout.addWidget(welcome_label)
+        layout.addSpacing(20)
+        layout.addWidget(step1_label)
+        layout.addSpacing(10)
+        layout.addWidget(step2_label)
+        layout.addStretch()
+
+        return page
+
+    def show_my_shares_context_menu(self, pos):
+        item = self.my_shares_list_widget.itemAt(pos)
+        if not item or item.text() == "无共享文件夹":
+            return
+
+        share_name = item.text().split(' (')[0]
+
+        menu = QMenu()
+        remove_action = QAction(self.style().standardIcon(QStyle.SP_DialogCancelButton), "移除此共享", self)
+        remove_action.triggered.connect(lambda: self.remove_local_share(share_name))
+        menu.addAction(remove_action)
+        menu.exec(self.my_shares_list_widget.mapToGlobal(pos))
+
+    def remove_local_share(self, share_name_to_remove):
+        reply = QMessageBox.question(self, "确认移除",
+                                     f"你确定要停止共享 '{share_name_to_remove}' 吗？\n此操作不会删除你的文件。",
+                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if reply == QMessageBox.No:
+            return
+
+        current_shares = get_config().get("shares", [])
+        new_shares = [s for s in current_shares if s.get("name") != share_name_to_remove]
+
+        config = get_config()
+        config['shares'] = new_shares
+        from core.config_loader import CONFIG_PATH
+        import toml
+        try:
+            with open(CONFIG_PATH, "w", encoding='utf-8') as f:
+                toml.dump(config, f)
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"无法保存配置文件: {e}")
+            return
+
+        self.config_data = load_config(force_reload=True)
+        self.controller.running_config = self.config_data
+        self.update_my_shares_list()
+        self.controller.restart_file_watcher()
+        if self.api_client:
+            self.api_client.notify_shares_changed()
+
+        self.add_log_message(f"已停止共享: {share_name_to_remove}", "️")
+
     def setup_timers(self):
         self.peer_update_timer = QTimer(self)
         self.peer_update_timer.timeout.connect(self.update_device_list)
-        self.peer_update_timer.start(5000)  # 缩短刷新间隔以更快响应下线
+        self.peer_update_timer.start(5000)
 
     def setup_websocket(self):
         ws_local_uri = f"ws://127.0.0.1:{self.controller.port}/ws/events"
@@ -326,7 +414,7 @@ class MainWindow(QMainWindow):
                           "<b>邻里+ (NetNeighbor Plus)</b><br><br>"
                           "一个基于 Python 和 PySide6 的局域网文件共享工具。<br>"
                           "旨在提供一个简单、轻量、跨平台的本地网络文件传输解决方案。<br><br>"
-                          "版本: 1.2.0 (Robust)")
+                          "版本: 1.3.0 (UX Enhanced)")
 
     def add_log_message(self, message: str, icon: str = "ℹ️"):
         from datetime import datetime
@@ -372,7 +460,6 @@ class MainWindow(QMainWindow):
         return f"{s} {size_name[i]}"
 
     def show_file_context_menu(self, pos):
-        # 【修复】增加离线检查
         if not self.active_peer_client or not self.device_list_widget.currentItem(): return
         current_service_name = self.device_list_widget.currentItem().data(100)
         if current_service_name not in self.online_devices_data: return
@@ -503,6 +590,10 @@ class MainWindow(QMainWindow):
             self.update_file_table(None)
             return
 
+        if not self.device_list_widget.currentItem():
+            self.clear_active_peer_view()
+            return
+
         current_service_name = self.device_list_widget.currentItem().data(100)
         if current_service_name not in self.online_devices_data:
             self.clear_active_peer_view()
@@ -521,15 +612,13 @@ class MainWindow(QMainWindow):
 
         peers = self.api_client.get_peers()
         if peers is None:
-            self.status_bar_label.setText("无法获取设备列表，请检查网络或重启应用。")
-            self.online_devices_data = {}  # 获取失败时清空
+            self.online_devices_data = {}
         else:
             my_full_service_name = f"{self.controller.service_name}._netneighbor._tcp.local."
             self.online_devices_data = {name: data for name, data in peers.items() if name != my_full_service_name}
 
         self.status_bar_label.setText(f"发现 {len(self.online_devices_data)} 个在线设备。")
 
-        # 【修复】设备列表更新后，检查当前活动设备是否已下线
         active_peer_service_name = None
         if self.device_list_widget.currentItem():
             active_peer_service_name = self.device_list_widget.currentItem().data(100)
@@ -538,7 +627,6 @@ class MainWindow(QMainWindow):
             self.add_log_message(f"当前查看的设备 '{active_peer_service_name.split('.')[0]}' 已下线。", "⚠️")
             self.clear_active_peer_view()
 
-        # 重绘设备列表UI
         self.device_list_widget.clear()
         for full_service_name, data in sorted(self.online_devices_data.items()):
             display_name = full_service_name.split('._netneighbor._tcp.local.')[0]
@@ -549,7 +637,6 @@ class MainWindow(QMainWindow):
                 self.device_list_widget.setCurrentItem(list_item)
 
     def clear_active_peer_view(self):
-        """【修复】新增的辅助函数，用于清理右侧面板和活动连接状态。"""
         self.active_peer_client = None
         if self.ws_remote_thread and self.ws_remote_thread.isRunning():
             self.ws_remote_thread.stop()
@@ -558,9 +645,12 @@ class MainWindow(QMainWindow):
         self.share_selector_combo.clear()
         self.share_selector_combo.setEnabled(False)
         self.file_table_widget.setRowCount(0)
-        self.current_path_label.setText("未选择设备")
         self.upload_button.setEnabled(False)
         self.back_button.setEnabled(False)
+
+        self.right_stack.setCurrentWidget(self.welcome_page)
+
+        # 当没有选中任何设备时，也应该清除状态栏的延迟信息
         self.status_bar_label.setText("就绪")
 
     def handle_device_click(self, clicked_item: QListWidgetItem, force_refresh: bool = False):
@@ -570,6 +660,8 @@ class MainWindow(QMainWindow):
         device_data = self.online_devices_data.get(service_name)
 
         if not device_data: return
+
+        self.right_stack.setCurrentWidget(self.file_browser_page)
 
         new_base_url = f"http://{device_data['address']}:{device_data['port']}"
         if not force_refresh and self.active_peer_client and self.active_peer_client.base_url == new_base_url:
@@ -586,9 +678,8 @@ class MainWindow(QMainWindow):
         self.active_path_stack = []
         if not force_refresh or not self.active_peer_client:
             self.active_peer_client = ApiClient(new_base_url)
-        else:  # 强制刷新时，如果客户端已存在，可不清空，但要确保URL一致
-            if self.active_peer_client.base_url != new_base_url:
-                self.active_peer_client = ApiClient(new_base_url)
+        elif self.active_peer_client.base_url != new_base_url:
+            self.active_peer_client = ApiClient(new_base_url)
 
         self.add_log_message(f"已连接到设备: {clicked_item.text()}", "🔌")
         self.measure_ping(self.active_peer_client, clicked_item.text())
@@ -673,11 +764,12 @@ class MainWindow(QMainWindow):
                 self.worker_thread.terminate()
 
         self.add_log_message("应用正在关闭...", "👋")
+
+        if self.ws_local_thread: self.ws_local_thread.stop()
+        if self.ws_remote_thread: self.ws_remote_thread.stop()
+
         self.controller.stop_all_services()
-        if self.ws_local_thread and self.ws_local_thread.isRunning():
-            self.ws_local_thread.stop()
-        if self.ws_remote_thread and self.ws_remote_thread.isRunning():
-            self.ws_remote_thread.stop()
+
         event.accept()
 
     def update_my_shares_list(self):
