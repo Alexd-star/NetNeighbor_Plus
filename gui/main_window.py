@@ -1,5 +1,6 @@
-# 文件: gui/main_window.py (完整无省略最终版)
+# 文件: gui/main_window.py
 # 描述: 应用的主窗口，负责UI的整体布局和用户交互逻辑。
+# (已添加实时速度显示, 并修正类型提示以兼容 Python 3.9)
 
 import asyncio
 import json
@@ -8,20 +9,19 @@ import os
 import socket
 import threading
 import time
-from typing import Any, Dict, List, Optional
-import toml
+from typing import Any, Dict, List, Optional, Union
 
+import toml
 import websockets
 from PySide6.QtCore import QCoreApplication, QSize, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QAction, QFont, QIcon
-from PySide6.QtWidgets import (QAbstractItemView, QApplication, QDialog,
-                               QFileDialog, QGroupBox, QHBoxLayout,
-                               QHeaderView, QLabel, QLineEdit, QListWidget,
-                               QListWidgetItem, QMainWindow, QMenu,
-                               QMessageBox, QProgressDialog, QPushButton,
-                               QStackedWidget, QStatusBar, QStyle,
-                               QTableWidget, QTableWidgetItem, QTextEdit,
-                               QVBoxLayout, QWidget, QComboBox)
+from PySide6.QtWidgets import (
+    QAbstractItemView, QApplication, QDialog, QFileDialog, QGroupBox,
+    QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget,
+    QListWidgetItem, QMainWindow, QMenu, QMessageBox, QProgressDialog,
+    QPushButton, QStackedWidget, QStatusBar, QStyle, QTableWidget,
+    QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget, QComboBox
+)
 
 from .api_client import ApiClient, UploadStreamer
 from .app_controller import AppController
@@ -30,10 +30,7 @@ from core.config_loader import get_config, load_config, CONFIG_PATH
 
 
 class WebSocketClientThread(QThread):
-    """
-    用于在后台处理WebSocket连接的线程。
-    它会持续监听来自服务器的消息，并通过信号(message_received)将消息发送给主线程。
-    """
+    """在后台线程中处理 WebSocket 连接, 并通过信号与主线程通信。"""
     message_received = Signal(str, str)
 
     def __init__(self, uri: str, source: str):
@@ -45,10 +42,9 @@ class WebSocketClientThread(QThread):
         self.task: Optional[asyncio.Task] = None
 
     async def listen(self):
-        """异步监听WebSocket消息的核心循环。"""
+        """异步监听 WebSocket 消息的核心循环。"""
         while self._is_running:
             try:
-                # 设置连接超时，防止长时间无响应
                 connect_kwargs = {"open_timeout": 5, "close_timeout": 5}
                 async with websockets.connect(self.uri, **connect_kwargs) as ws:
                     print(f"WebSocket ({self.source}) 已连接到 {self.uri}")
@@ -58,35 +54,30 @@ class WebSocketClientThread(QThread):
                     )
                     while self._is_running:
                         try:
-                            # 设置接收超时，允许线程在没有消息时也能响应停止信号
                             msg = await asyncio.wait_for(ws.recv(), timeout=1.0)
                             self.message_received.emit(msg, self.source)
                         except asyncio.TimeoutError:
-                            # 超时是正常的，继续检查是否需要停止
                             await asyncio.sleep(0.1)
                         except websockets.exceptions.ConnectionClosed:
                             if self._is_running:
                                 print(f"WebSocket ({self.source}) 连接已关闭。")
                             break
             except asyncio.CancelledError:
-                # 任务被取消，正常退出
                 break
             except Exception as e:
-                # 其他连接错误，等待后重试
                 if self._is_running:
                     print(f"WebSocket ({self.source}) 连接错误: {e}。5秒后重连...")
                     self.message_received.emit(
                         json.dumps({"event": f"ws_{self.source}_disconnected"}),
                         self.source
                     )
-                    # 非阻塞式等待，允许快速响应停止信号
                     for _ in range(50):
                         if not self._is_running:
                             break
                         await asyncio.sleep(0.1)
 
     def run(self):
-        """QThread的入口点，设置并运行asyncio事件循环。"""
+        """QThread的入口点, 设置并运行asyncio事件循环。"""
         try:
             self.loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self.loop)
@@ -95,7 +86,6 @@ class WebSocketClientThread(QThread):
         except asyncio.CancelledError:
             pass
         finally:
-            # 清理事件循环
             if self.loop and self.loop.is_running():
                 self.loop.stop()
             if self.loop and not self.loop.is_closed():
@@ -108,10 +98,8 @@ class WebSocketClientThread(QThread):
             return
         print(f"正在请求停止 WebSocket ({self.source}) 线程...")
         self._is_running = False
-        # 在事件循环中安全地取消任务
         if self.loop and self.task and not self.task.done():
             self.loop.call_soon_threadsafe(self.task.cancel)
-        # 等待线程自然结束，如果超时则强制终止
         if not self.wait(2000):
             print(f"警告: WebSocket ({self.source}) 线程超时，强制终止。")
             self.terminate()
@@ -119,13 +107,16 @@ class WebSocketClientThread(QThread):
 
 class WorkerThread(QThread):
     """
-    通用工作线程，处理所有耗时文件/文件夹传输任务。
+    通用工作线程, 处理所有耗时文件/文件夹传输任务。
+    【新增】增加了速度计算和信号。
     """
     progress = Signal(int)
+    # --- 【优化1】新增两个信号, 用于更新进度文本和实时速度 ---
+    progress_text_update = Signal(str)
+    speed_update = Signal(str)
     file_finished = Signal(str)
     all_finished = Signal()
     error = Signal(str)
-    progress_text_update = Signal(str)
 
     def __init__(self, tasks: List[Dict]):
         super().__init__()
@@ -134,14 +125,16 @@ class WorkerThread(QThread):
         self._is_running = True
 
     def run(self):
-        """线程主执行函数，按顺序处理任务列表。"""
+        """线程主执行函数, 按顺序处理任务列表。"""
         total_tasks = len(self.tasks)
         for i, task in enumerate(self.tasks):
             if not self._is_running:
                 self.error.emit("任务被用户取消。")
                 break
 
-            self.progress_text_update.emit(f"({i + 1}/{total_tasks}) 正在处理: {task.get('name', 'N/A')}")
+            self.progress_text_update.emit(
+                f"({i + 1}/{total_tasks}) 正在处理: {task.get('name', 'N/A')}"
+            )
 
             try:
                 task_type = task.get("type")
@@ -156,7 +149,6 @@ class WorkerThread(QThread):
                 else:
                     raise ValueError(f"未知的任务类型: {task_type}")
             except Exception as e:
-                # 对用户主动取消的操作进行特定处理，避免显示为错误
                 if isinstance(e, InterruptedError):
                     self.error.emit(f"任务 '{task.get('name')}' 已被用户取消。")
                 else:
@@ -171,116 +163,168 @@ class WorkerThread(QThread):
         """外部调用的停止方法。"""
         self._is_running = False
 
+    # --- 【优化2】重构传输函数以包含速度计算逻辑 ---
+    def _transfer_loop(self, iterator, file_handle, total_size):
+        """通用的传输循环, 包含进度和速度计算。"""
+        start_time = time.time()
+        last_update_time = start_time
+        bytes_since_last_update = 0
+        transferred_bytes = 0
+
+        for chunk in iterator:
+            if not self._is_running:
+                raise InterruptedError("Transfer cancelled by user")
+
+            file_handle.write(chunk)
+            chunk_len = len(chunk)
+            transferred_bytes += chunk_len
+            bytes_since_last_update += chunk_len
+
+            current_time = time.time()
+            time_delta = current_time - last_update_time
+
+            # 每 0.5 秒更新一次速度
+            if time_delta >= 0.5:
+                speed = bytes_since_last_update / time_delta
+                self.speed_update.emit(f"{self._format_size(speed)}/s")
+                last_update_time = current_time
+                bytes_since_last_update = 0
+
+            if total_size > 0:
+                self.progress.emit(int((transferred_bytes / total_size) * 100))
+
+        # 传输结束, 清空速度显示
+        self.speed_update.emit("")
+
     def _run_download_file(self, task_info):
         """下载单个文件的具体实现。"""
-        p_client = task_info['peer_client']
-        s_name = task_info['share_name']
-        r_path = task_info['remote_path']
-        save_p = task_info['save_path']
+        p_client, s_name = task_info['peer_client'], task_info['share_name']
+        r_path, save_p = task_info['remote_path'], task_info['save_path']
         file_name = os.path.basename(save_p)
 
         with p_client.download_file_stream(s_name, r_path) as resp:
             resp.raise_for_status()
             total = int(resp.headers.get('content-length', 0))
-            dl_size = 0
             with open(save_p, "wb") as f:
-                for chunk in resp.iter_bytes(chunk_size=8192):
-                    if not self._is_running:
-                        raise InterruptedError("Download cancelled")
-                    f.write(chunk)
-                    dl_size += len(chunk)
-                    if total > 0:
-                        self.progress.emit(int((dl_size / total) * 100))
+                self._transfer_loop(resp.iter_bytes(chunk_size=8192), f, total)
+
         self.file_finished.emit(f"文件 '{file_name}' 下载完成！")
 
     def _run_download_folder(self, task_info):
         """下载文件夹为ZIP的具体实现。"""
-        p_client = task_info['peer_client']
-        s_name = task_info['share_name']
-        r_path = task_info['remote_path']
-        save_p = task_info['save_path']
+        p_client, s_name = task_info['peer_client'], task_info['share_name']
+        r_path, save_p = task_info['remote_path'], task_info['save_path']
         folder_name = task_info['name']
 
-        self.progress_text_update.emit(f"服务器正在准备文件夹 '{folder_name}'...")
-
+        self.progress_text_update.emit(f"服务器正在准备 '{folder_name}'...")
         with p_client.download_folder_stream(s_name, r_path) as resp:
             self.progress_text_update.emit(f"开始下载 '{folder_name}.zip'...")
             resp.raise_for_status()
             total = int(resp.headers.get('content-length', 0))
-            dl_size = 0
             with open(save_p, "wb") as f:
-                for chunk in resp.iter_bytes(chunk_size=8192):
-                    if not self._is_running:
-                        raise InterruptedError("Download cancelled")
-                    f.write(chunk)
-                    dl_size += len(chunk)
-                    if total > 0:
-                        self.progress.emit(int((dl_size / total) * 100))
-        self.file_finished.emit(f"文件夹 '{folder_name}' 已成功下载为 '{os.path.basename(save_p)}'！")
+                self._transfer_loop(resp.iter_bytes(chunk_size=8192), f, total)
+
+        self.file_finished.emit(
+            f"文件夹 '{folder_name}' 已下载为 '{os.path.basename(save_p)}'！"
+        )
+
+    def _run_upload_file(self, task_info):
+        """上传单个文件的具体实现。"""
+        local_path, p_client = task_info['local_path'], task_info['peer_client']
+        s_name, dest = task_info['share_name'], task_info['dest_path']
+        file_name = os.path.basename(local_path)
+
+        # UploadStreamer 现在也需要包含速度计算逻辑
+        # (为了简化, 我们在回调中计算)
+        total_size = os.path.getsize(local_path)
+        sent_bytes = 0
+        last_update_time = time.time()
+        bytes_since_last_update = 0
+
+        def progress_callback(chunk_len):
+            nonlocal sent_bytes, last_update_time, bytes_since_last_update
+            sent_bytes += chunk_len
+            bytes_since_last_update += chunk_len
+
+            current_time = time.time()
+            time_delta = current_time - last_update_time
+            if time_delta >= 0.5:
+                speed = bytes_since_last_update / time_delta
+                self.speed_update.emit(f"{self._format_size(speed)}/s")
+                last_update_time = current_time
+                bytes_since_last_update = 0
+
+            if total_size > 0:
+                self.progress.emit(int((sent_bytes / total_size) * 100))
+
+        with UploadStreamer(local_path, progress_callback=progress_callback) as uploader:
+            p_client.upload_file_stream(s_name, dest, uploader)
+
+        self.speed_update.emit("")
+        self.file_finished.emit(f"文件 '{file_name}' 上传成功。")
 
     def _run_upload_folder(self, task_info):
         """上传整个文件夹的具体实现。"""
-        local_folder_path = task_info['local_path']
-        p_client = task_info['peer_client']
-        s_name = task_info['share_name']
-        base_dest_path = task_info['dest_path']
-        folder_name = os.path.basename(local_folder_path)
+        local_folder, p_client = task_info['local_path'], task_info['peer_client']
+        s_name, base_dest = task_info['share_name'], task_info['dest_path']
+        folder_name = os.path.basename(local_folder)
 
-        root_remote_path = os.path.join(base_dest_path, folder_name).replace('\\', '/')
+        root_remote_path = os.path.join(base_dest, folder_name).replace('\\', '/')
         p_client.create_directory(s_name, root_remote_path)
         self.file_finished.emit(f"在远程创建目录: {root_remote_path}")
 
         files_to_upload = []
-        for root, dirs, files in os.walk(local_folder_path):
-            if not self._is_running: raise InterruptedError("Upload cancelled")
+        for root, dirs, files in os.walk(local_folder):
+            if not self._is_running:
+                raise InterruptedError("Upload cancelled")
 
-            rel_path = os.path.relpath(root, local_folder_path)
+            rel_path = os.path.relpath(root, local_folder)
             for d in dirs:
-                remote_dir_path = os.path.join(root_remote_path, rel_path, d).replace('\\', '/')
-                p_client.create_directory(s_name, remote_dir_path)
+                remote_dir = os.path.join(root_remote_path, rel_path, d)
+                p_client.create_directory(s_name, remote_dir.replace('\\', '/'))
 
             for f in files:
-                remote_dest_folder = os.path.normpath(os.path.join(root_remote_path, rel_path)).replace('\\', '/')
+                remote_folder = os.path.join(root_remote_path, rel_path)
                 files_to_upload.append({
                     'local_file': os.path.join(root, f),
-                    'remote_dest': remote_dest_folder
+                    'remote_dest': remote_folder.replace('\\', '/')
                 })
 
         total_files = len(files_to_upload)
         for i, file_task in enumerate(files_to_upload):
-            if not self._is_running: raise InterruptedError("Upload cancelled")
+            self.progress_text_update.emit(
+                f"上传文件 ({i + 1}/{total_files}): {os.path.basename(file_task['local_file'])}"
+            )
+            upload_task = {
+                "type": "upload_file",
+                "local_path": file_task['local_file'],
+                "peer_client": p_client,
+                "share_name": s_name,
+                "dest_path": file_task['remote_dest']
+            }
+            self._run_upload_file(upload_task)
 
-            local_file = file_task['local_file']
-            remote_dest = file_task['remote_dest']
-            file_name = os.path.basename(local_file)
+    # --- 【优化3】将格式化函数移到 WorkerThread 中，方便内部调用 ---
+    def _format_size(self, size_bytes: Union[int, float]) -> str:
+        """将字节大小格式化为人类可读的字符串。"""
+        if size_bytes <= 0:
+            return "0 B"
+        if size_bytes < 1024:
+            return f"{size_bytes} B"
 
-            self.progress_text_update.emit(f"上传文件 ({i + 1}/{total_files}): {file_name}")
-            self.progress.emit(0)
+        # KB, MB, GB, TB
+        power_labels = ('KB', 'MB', 'GB', 'TB')
+        i = int(math.floor(math.log(size_bytes, 1024)))
+        # 确保索引在元组范围内
+        i = min(i - 1, len(power_labels) - 1)
 
-            def progress_callback(p):
-                self.progress.emit(p)
-
-            with UploadStreamer(local_file, progress_callback=progress_callback) as uploader:
-                p_client.upload_file_stream(s_name, remote_dest, uploader)
-            self.file_finished.emit(f"文件 '{file_name}' 上传成功。")
-
-    def _run_upload_file(self, task_info):
-        """上传单个文件的具体实现。"""
-        local_path = task_info['local_path']
-        p_client = task_info['peer_client']
-        s_name = task_info['share_name']
-        dest = task_info['dest_path']
-        file_name = os.path.basename(local_path)
-
-        def progress_callback(p): self.progress.emit(p)
-
-        with UploadStreamer(local_path, progress_callback=progress_callback) as uploader:
-            p_client.upload_file_stream(s_name, dest, uploader)
-        self.file_finished.emit(f"文件 '{file_name}' 上传成功。")
+        p = math.pow(1024, i + 1)
+        s = round(size_bytes / p, 2)
+        return f"{s} {power_labels[i]}"
 
 
 class MainWindow(QMainWindow):
-    """应用主窗口类，包含所有UI元素和交互逻辑。"""
+    """应用主窗口类, 包含所有UI元素和交互逻辑。"""
 
     def __init__(self, controller: AppController):
         super().__init__()
@@ -295,12 +339,94 @@ class MainWindow(QMainWindow):
         self.ws_remote_thread: Optional[WebSocketClientThread] = None
         self.progress_dialog: Optional[QProgressDialog] = None
 
+        # --- 【优化4】增加一个变量来存储进度对话框的标签文本 ---
+        self._progress_label_text = ""
+
         self._setup_window()
         self._load_icons()
         self._setup_ui()
         self.update_my_shares_list()
-        self.controller.device_info_updated.connect(self.update_local_status_display)
+        self.controller.device_info_updated.connect(
+            self.update_local_status_display
+        )
 
+    # ... 省略部分未改动的函数 ...
+
+    def start_worker_thread(self, progress_title: str, tasks: List[Dict]):
+        """启动工作线程并显示进度对话框。"""
+        if self.worker_thread and self.worker_thread.isRunning():
+            QMessageBox.warning(
+                self, "任务正在进行", "已有文件在传输中，请稍后重试。", QMessageBox.Ok
+            )
+            return
+
+        self.progress_dialog = QProgressDialog(self)
+        self.progress_dialog.setWindowTitle(progress_title)
+        self.progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
+
+        # 初始化标签文本
+        self._progress_label_text = "准备开始..."
+        self.progress_dialog.setLabelText(self._progress_label_text)
+
+        # 设置范围, 只有单个任务时使用确定性进度条
+        is_single_task = len(tasks) == 1
+        self.progress_dialog.setRange(0, 100 if is_single_task else 0)
+
+        self.worker_thread = WorkerThread(tasks)
+        self.worker_thread.progress.connect(self.progress_dialog.setValue)
+
+        # --- 【优化5】连接新的信号到槽函数 ---
+        self.worker_thread.progress_text_update.connect(
+            self.on_worker_progress_text_update
+        )
+        self.worker_thread.speed_update.connect(
+            self.on_worker_speed_update
+        )
+
+        self.worker_thread.file_finished.connect(self.on_worker_file_finished)
+        self.worker_thread.all_finished.connect(self.on_worker_all_finished)
+        self.worker_thread.error.connect(self.on_worker_error)
+        self.progress_dialog.canceled.connect(self.worker_thread.stop)
+
+        self.worker_thread.start()
+        self.progress_dialog.show()
+
+    # --- 【优化6】为新的信号创建槽函数 ---
+    def on_worker_progress_text_update(self, text: str):
+        """当工作线程更新进度文本时调用的槽函数。"""
+        self._progress_label_text = text
+        # 同时更新速度显示
+        current_speed_label = getattr(self, '_current_speed_label', '')
+        self.progress_dialog.setLabelText(
+            f"{self._progress_label_text}\n{current_speed_label}"
+        )
+
+    def on_worker_speed_update(self, speed_text: str):
+        """当工作线程更新速度时调用的槽函数。"""
+        self._current_speed_label = speed_text
+        self.progress_dialog.setLabelText(
+            f"{self._progress_label_text}\n{self._current_speed_label}"
+        )
+
+    # ... 省略其他未改动的函数, 只保留 _format_size 的修改 ...
+
+    def _format_size(self, size_bytes: int) -> str:
+        """将字节大小格式化为人类可读的字符串。"""
+        # 这个函数现在可以调用 WorkerThread 中的版本, 但为了UI独立性, 保留一份
+        if size_bytes <= 0:
+            return ""
+        if size_bytes < 1024:
+            return f"{size_bytes} B"
+
+        power_labels = ('KB', 'MB', 'GB', 'TB')
+        i = int(math.floor(math.log(size_bytes, 1024)))
+        i = min(i - 1, len(power_labels) - 1)
+
+        p = math.pow(1024, i + 1)
+        s = round(size_bytes / p, 2)
+        return f"{s} {power_labels[i]}"
+
+    # --- 为了让您能直接替换, 我将省略的函数也包含进来 ---
     def post_init_setup(self):
         """在后台服务启动后进行网络相关的初始化。"""
         self.add_log_message("后端服务已就绪, UI开始进行网络初始化...")
@@ -345,7 +471,6 @@ class MainWindow(QMainWindow):
             frame.moveCenter(center)
             self.move(frame.topLeft())
         except AttributeError:
-            # 兼容一些无法获取屏幕信息的环境
             self.setGeometry(100, 100, 1200, 700)
 
     def _setup_ui(self):
@@ -638,13 +763,11 @@ class MainWindow(QMainWindow):
             data = json.loads(message)
             event = data.get("event")
             if event and event.startswith("ws_"):
-                # 处理连接/断开事件
                 if "connected" in event:
                     self.add_log_message(f"WebSocket ({source}) 已连接。", "🔗")
                 else:
                     self.add_log_message(f"WebSocket ({source}) 已断开。", "🔌")
             elif source == 'local':
-                # 处理来自本机服务的事件
                 if event == "peer_online":
                     self.add_log_message(f"设备上线: {data.get('name')}", "🟢")
                     self.update_device_list()
@@ -652,7 +775,6 @@ class MainWindow(QMainWindow):
                     self.add_log_message(f"设备下线: {data.get('name')}", "🔴")
                     self.update_device_list()
             elif source == 'remote':
-                # 处理来自远程设备的事件
                 if event == "shares_updated":
                     self.add_log_message(f"设备 {data.get('device_name')} 共享已更新。", "🔄")
                     if self.device_list_widget.currentItem() and self.active_peer_client:
@@ -662,15 +784,6 @@ class MainWindow(QMainWindow):
                     QTimer.singleShot(500, self.refresh_current_file_view)
         except json.JSONDecodeError:
             pass
-
-    def _format_size(self, size_bytes: int) -> str:
-        """将字节大小格式化为人类可读的字符串。"""
-        if size_bytes <= 0: return ""
-        if size_bytes < 1024: return f"{size_bytes} B"
-        i = int(math.floor(math.log(size_bytes, 1024)))
-        p = math.pow(1024, i)
-        s = round(size_bytes / p, 2)
-        return f"{s} {('KB', 'MB', 'GB', 'TB')[i - 1]}"
 
     def show_file_context_menu(self, pos):
         """显示文件列表的右键菜单。"""
@@ -771,36 +884,6 @@ class MainWindow(QMainWindow):
                 })
             if tasks:
                 self.start_worker_thread("正在上传文件...", tasks)
-
-    def start_worker_thread(self, progress_title: str, tasks: List[Dict]):
-        """启动工作线程并显示进度对话框。"""
-        if self.worker_thread and self.worker_thread.isRunning():
-            QMessageBox.warning(self, "任务正在进行", "已有文件在传输中，请稍后重试。", QMessageBox.Ok)
-            return
-
-        self.progress_dialog = QProgressDialog(self)
-        self.progress_dialog.setWindowTitle(progress_title)
-        self.progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
-        self.progress_dialog.setLabelText("准备开始...")
-
-
-
-        is_single_download_task = len(tasks) == 1 and tasks[0]['type'] in ['download_file', 'download_folder']
-        if is_single_download_task:
-            self.progress_dialog.setRange(0, 100)
-        else:
-            self.progress_dialog.setRange(0, 0)  # 不确定模式
-
-        self.worker_thread = WorkerThread(tasks)
-        self.worker_thread.progress.connect(self.progress_dialog.setValue)
-        self.worker_thread.progress_text_update.connect(self.progress_dialog.setLabelText)
-        self.worker_thread.file_finished.connect(self.on_worker_file_finished)
-        self.worker_thread.all_finished.connect(self.on_worker_all_finished)
-        self.worker_thread.error.connect(self.on_worker_error)
-        self.progress_dialog.canceled.connect(self.worker_thread.stop)
-
-        self.worker_thread.start()
-        self.progress_dialog.show()
 
     def on_worker_file_finished(self, message: str):
         """当工作线程完成一个文件时调用的槽函数。"""
