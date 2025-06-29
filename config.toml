@@ -9,5 +9,6 @@ path = "D:/test_file/documents/photos"
 permissions = [ "read",]
 
 [service]
-name = "MyAwesomePC"
+# 将 "MyAwesomePC" 改为 "auto" 或留空，以启用设备名动态检测
+name = "auto"
 port = 8080

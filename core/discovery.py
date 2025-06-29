@@ -56,6 +56,7 @@ class DiscoveryListener:
                 properties = {k.decode('utf-8'): v.decode('utf-8') for k, v in
                               info.properties.items()} if info.properties else {}
 
+                # 将包含设备类型在内的所有属性存入在线设备列表
                 online_devices[name] = {"address": address, "port": port, "properties": properties}
 
                 if is_new:

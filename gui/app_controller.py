@@ -4,10 +4,12 @@ import socket
 import threading
 import uvicorn
 import time
+import platform
+import getpass
 import json
 import asyncio
 from PySide6.QtCore import QObject, Signal
-from core.config_loader import get_config, get_shares
+from core.config_loader import get_config,load_config, get_shares
 from core.discovery import DiscoveryService
 from core.web_api import app as fastapi_app
 from core.tcp_server import run_tcp_server
@@ -37,25 +39,40 @@ class UvicornServer(threading.Thread):
 
 class AppController(QObject):
     server_started = Signal()
+    # 【新增】定义一个信号，用于在设备信息就绪后通知UI
+    device_info_updated = Signal()
 
     def __init__(self, port_override=None, parent=None):
         super().__init__(parent)
-        config = get_config()
+        # 【修复】加载原始配置，而不是使用可能被修改的全局单例
+        self.running_config = load_config()
         self.port_override = port_override
-        self.port = port_override or config.get("service", {}).get("port", 8080)
+        self.port = port_override or self.running_config.get("service", {}).get("port", 8080)
         self.tcp_port = self.port + 1
 
-        original_name = config.get("service", {}).get("name", "DefaultPC")
-        self.device_name = f"{original_name}-{self.port}" if port_override else original_name
+        # 【修复】初始化时，只使用配置文件中的原始名字作为临时名字。
+        # 不再拼接端口号，避免污染配置。
+        # 最终的、正确的设备名将在 start_all_services 中确定。
+        self.device_name = self.running_config.get("service", {}).get("name", "auto")
         self.service_name = self.device_name
 
-        self.running_config = config
+        self.device_properties = {}
+
         self.running_config['service']['port'] = self.port
-        self.running_config['service']['name'] = self.device_name
 
         self.stop_event = threading.Event()
         self.watcher_stop_event = threading.Event()
         self.uvicorn_server_thread, self.discovery_service, self.tcp_server_thread, self.watcher_thread, self.is_running = None, None, None, None, False
+
+    # 【新增】动态判断设备类型的辅助方法
+    def _get_dynamic_device_type(self) -> str:
+        system = platform.system().lower()
+        if system in ["windows", "linux", "darwin"]:
+            return "PC"
+        elif system == "android":
+            return "Phone/Tablet"
+        else:
+            return "Unknown Device"
 
     def start_all_services(self):
         if self.is_running: return
@@ -66,14 +83,38 @@ class AppController(QObject):
 
         print("正在启动所有后台服务...")
 
-        # 【功能点3】增加设备类型字段
-        properties = {
-            'os': 'openKylin',
-            'user': 'testuser',
+        # --- 【核心修复】重新构建设备名生成逻辑 ---
+        # 1. 从原始配置文件中获取基础设备名（"auto" 或用户自定义名）
+        base_name = self.running_config.get("service", {}).get("name", "auto").strip()
+
+        # 2. 如果是 "auto"，则动态获取主机名，否则使用用户自定义名
+        if not base_name or base_name.lower() == 'auto':
+            dynamic_base_name = socket.gethostname()
+        else:
+            dynamic_base_name = base_name
+
+        # 3. 只有在提供了端口覆盖参数时，才在名字后附加端口号
+        if self.port_override:
+            self.device_name = f"{dynamic_base_name}-{self.port}"
+        else:
+            self.device_name = dynamic_base_name
+
+        self.service_name = self.device_name
+        # ----------------------------------------------
+
+        # 动态构建广播属性并存储
+        self.device_properties = {
+            'os': f"{platform.system()} {platform.release()}",
+            'user': getpass.getuser(),
             'tcp_port': str(self.tcp_port),
-            'dev_type': 'PC'
+            'dev_type': self._get_dynamic_device_type()
         }
-        self.discovery_service = DiscoveryService(host_ip, self.port, self.service_name, properties)
+
+        # 发射信号通知UI更新
+        self.device_info_updated.emit()
+
+        # 使用最终确定的动态信息启动服务
+        self.discovery_service = DiscoveryService(host_ip, self.port, self.service_name, self.device_properties)
         self.discovery_service.start()
 
         self.tcp_server_thread = threading.Thread(target=run_tcp_server, args=(self.tcp_port, self.stop_event),

@@ -159,6 +159,7 @@ class MainWindow(QMainWindow):
         self.load_icons()
         self.setup_ui()
         self.update_my_shares_list()
+        self.controller.device_info_updated.connect(self.update_local_status_display)
 
     def post_init_setup(self):
         print("后端服务已就绪, UI开始进行网络初始化...")
@@ -166,6 +167,9 @@ class MainWindow(QMainWindow):
         self.setup_timers()
         self.setup_websocket()
         self.status_bar_label.setText("就绪. 正在扫描局域网设备...")
+
+        # 【修复】确保在服务启动后，也主动更新一次UI
+        self.update_local_status_display()
         self.update_device_list()
 
     def get_my_ip(self):
@@ -216,15 +220,29 @@ class MainWindow(QMainWindow):
         about_action.triggered.connect(self.show_about_dialog)
         help_menu.addAction(about_action)
 
+        # --- 【UI改造】美化本机状态显示 ---
         my_status_box = QGroupBox("本机状态")
         my_status_box.setObjectName("StatusGroupBox")
         my_status_layout = QHBoxLayout(my_status_box)
-        self.device_name_label = QLabel(f"<b>设备名:</b> {self.controller.device_name}")
-        my_ip_label = QLabel(f"<b>IP地址:</b> {self.my_ip}:{self.controller.port}")
+
+        # 使用 QLabel 来显示动态获取的设备名
+        self.device_name_label = QLabel("设备名: 正在检测...")
+        self.device_name_label.setToolTip("当前设备的网络名称")
+
+        # 新增 QLabel 用于显示设备类型
+        self.device_type_label = QLabel("类型: 未知")
+        self.device_type_label.setToolTip("根据操作系统判断的设备类型")
+
+        # 新增 QLabel 用于显示 IP 地址
+        my_ip_label = QLabel(f"IP地址: {self.my_ip}:{self.controller.port}")
+
         my_status_layout.addWidget(self.device_name_label)
-        my_status_layout.addStretch()
+        my_status_layout.addSpacing(20)  # 增加一些间距
+        my_status_layout.addWidget(self.device_type_label)
+        my_status_layout.addStretch()  # 弹簧，将IP地址推到最右边
         my_status_layout.addWidget(my_ip_label)
         main_layout.addWidget(my_status_box)
+        # -----------------------------------
 
         interaction_layout = QHBoxLayout()
         main_layout.addLayout(interaction_layout, stretch=1)
@@ -316,6 +334,22 @@ class MainWindow(QMainWindow):
         self.setStatusBar(self.status_bar)
         self.status_bar_label = QLabel("正在初始化...")
         self.status_bar.addWidget(self.status_bar_label, 1)
+
+    def update_local_status_display(self):
+        """
+        根据controller中最新的动态信息，刷新本机状态UI。
+        """
+        print("UI接到通知，正在更新本机状态显示...")
+
+        # 从控制器获取最新的、正确的设备名
+        device_name = self.controller.device_name
+        self.device_name_label.setText(f"<b>设备名:</b> {device_name}")
+
+        # 从控制器获取最新的设备类型
+        device_type = self.controller.device_properties.get('dev_type', '未知')
+        self.device_type_label.setText(f"<b>类型:</b> {device_type}")
+        self.device_type_label.setToolTip(
+            f"操作系统: {self.controller.device_properties.get('os', 'N/A')}\n用户名: {self.controller.device_properties.get('user', 'N/A')}")
 
     def create_welcome_page(self):
         page = QWidget()
@@ -623,7 +657,7 @@ class MainWindow(QMainWindow):
         """【性能优化】使用增量更新来修改设备列表，避免闪烁和性能问题"""
         if not self.api_client: return
 
-        peers = self.api_client.get_peers()
+        peers = self.api_client.get_peers() # 从后端获取在线设备
         new_online_data = {}
         if peers:
             my_full_service_name = f"{self.controller.service_name}._netneighbor._tcp.local."
@@ -660,14 +694,16 @@ class MainWindow(QMainWindow):
         for service_name in sorted(list(to_add)):
             data = self.online_devices_data[service_name]
             display_name = service_name.split('._netneighbor._tcp.local.')[0]
+
+            # 【核心代码】从设备属性中获取 dev_type，如果没有则显示“未知设备”
             dev_type = data.get("properties", {}).get("dev_type", "未知设备")
 
             list_item = QListWidgetItem()
-            list_item.setText(f"{display_name}\n  类型: {dev_type}")
+            # 【美观性】使用换行符将设备名和类型分开显示，更清晰
+            list_item.setText(f"{display_name}  类型：{dev_type}")
             list_item.setIcon(self.style().standardIcon(QStyle.SP_DriveNetIcon))
             list_item.setData(100, service_name)
             self.device_list_widget.addItem(list_item)
-
     def clear_active_peer_view(self):
         self.active_peer_client = None
         if self.ws_remote_thread and self.ws_remote_thread.isRunning():
