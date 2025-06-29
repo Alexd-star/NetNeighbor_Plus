@@ -413,7 +413,8 @@ class MainWindow(QMainWindow):
         my_shares_header_layout = QHBoxLayout()
         my_shares_header_layout.addWidget(QLabel("<h4>本机共享</h4>"))
         my_shares_header_layout.addStretch()
-        self.manage_shares_button = QPushButton("管理...")
+        self.manage_shares_button = QPushButton("设置")
+        self.manage_shares_button.setToolTip("打开设置窗口以添加、移除或修改本机共享")
         self.manage_shares_button.clicked.connect(self.open_settings)
         my_shares_header_layout.addWidget(self.manage_shares_button)
         left_panel_layout.addLayout(my_shares_header_layout)
@@ -437,11 +438,14 @@ class MainWindow(QMainWindow):
         self.share_selector_combo = QComboBox()
         self.share_selector_combo.currentIndexChanged.connect(self.handle_share_selection_change)
         self.back_button = QPushButton(self.back_icon, "返回")
+        self.back_button.setToolTip("返回上一级目录")
         self.back_button.clicked.connect(self.go_back_directory)
         self.current_path_label = QLineEdit("/")
         self.current_path_label.setReadOnly(True)
+        self.current_path_label.setToolTip("当前正在浏览的远程路径")
 
         self.upload_button = QPushButton(self.upload_icon, "上传")
+        self.upload_button.setToolTip("向当前远程路径上传文件或文件夹")
         upload_menu = QMenu(self)
         upload_files_action = QAction(self.upload_file_icon, "上传文件...", self)
         upload_files_action.triggered.connect(lambda: self.handle_upload_action(is_folder=False))
@@ -605,8 +609,23 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "设置已保存", "设置已成功保存。", QMessageBox.Ok)
 
     def show_about_dialog(self):
-        """显示关于对话框。"""
-        QMessageBox.about(self, "关于 邻里+", "<b>邻里+ (NetNeighbor Plus)</b><br><br>版本: 3.2.0 (Full-Featured)")
+        """显示关于对话框，包含版本和功能说明。"""
+        QMessageBox.about(
+            self,
+            "关于 邻里+",
+            """<b>邻里+ (NetNeighbor Plus) v3.3.0</b>
+            <p>一款基于局域网的、开源的、跨平台文件共享工具。</p>
+            <p><b>核心功能:</b></p>
+            <ul>
+                <li>自动发现局域网内的其他设备</li>
+                <li>支持文件和文件夹的上传与下载</li>
+                <li>灵活的文件夹权限管理 (可读/可下载/可上传)</li>
+                <li>实时文件变更监控与通知</li>
+                <li>跨平台支持 (Windows, macOS, Linux)</li>
+            </ul>
+            <p>感谢您的使用！</p>
+            """
+        )
 
     def add_log_message(self, message: str, icon: str = "ℹ️"):
         """向日志窗口添加一条带时间戳和图标的消息。"""
@@ -1024,6 +1043,6 @@ class MainWindow(QMainWindow):
             if "upload" in permissions: parts.append("可上传")
             perm_text = "/".join(parts) if parts else "无权限"
             item = QListWidgetItem(f"{name} ({perm_text})");
-            item.setToolTip(share.get('path'));
+            item.setToolTip(f"本地路径: {share.get('path')}");
             item.setIcon(self.folder_icon)
             self.my_shares_list_widget.addItem(item)
