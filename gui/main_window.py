@@ -211,16 +211,16 @@ class WorkerThread(QThread):
         self.file_finished.emit(f"文件 '{file_name}' 下载完成！")
 
     def _run_download_folder(self, task_info):
-        """下载文件夹为ZIP的具体实现。"""
+        """下载文件夹为ZIP的具体实现 (优化提示文本)。"""
         p_client, s_name = task_info['peer_client'], task_info['share_name']
         r_path, save_p = task_info['remote_path'], task_info['save_path']
         folder_name = task_info['name']
 
-        self.progress_text_update.emit(f"服务器正在准备 '{folder_name}'...")
+        # 优化提示，告知用户正在进行流式传输
+        self.progress_text_update.emit(f"开始下载 '{folder_name}.zip' (流式传输，大小未知)...")
         with p_client.download_folder_stream(s_name, r_path) as resp:
-            self.progress_text_update.emit(f"开始下载 '{folder_name}.zip'...")
             resp.raise_for_status()
-            total = int(resp.headers.get('content-length', 0))
+            total = int(resp.headers.get('content-length', 0))  # 对于流式通常为0
             with open(save_p, "wb") as f:
                 self._transfer_loop(resp.iter_bytes(chunk_size=8192), f, total)
 
@@ -353,7 +353,11 @@ class MainWindow(QMainWindow):
     # ... 省略部分未改动的函数 ...
 
     def start_worker_thread(self, progress_title: str, tasks: List[Dict]):
-        """启动工作线程并显示进度对话框。"""
+        """
+        启动工作线程并显示进度对话框。
+        - 仅在下载文件夹时使用不确定模式的动画进度条。
+        - 其他所有情况(单文件、多文件下载)保持原始逻辑。
+        """
         if self.worker_thread and self.worker_thread.isRunning():
             QMessageBox.warning(
                 self, "任务正在进行", "已有文件在传输中，请稍后重试。", QMessageBox.Ok
@@ -364,13 +368,20 @@ class MainWindow(QMainWindow):
         self.progress_dialog.setWindowTitle(progress_title)
         self.progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
 
-        # 初始化标签文本
         self._progress_label_text = "准备开始..."
         self.progress_dialog.setLabelText(self._progress_label_text)
 
-        # 设置范围, 只有单个任务时使用确定性进度条
-        is_single_task = len(tasks) == 1
-        self.progress_dialog.setRange(0, 100 if is_single_task else 0)
+        # --- 【核心修改】---
+        # 1. 检查任务列表中是否包含任何 "download_folder" 类型的任务
+        is_downloading_folder = any(task.get("type") == "download_folder" for task in tasks)
+
+        if is_downloading_folder:
+            # 2. 如果是，则强制使用不确定模式的动画进度条 (0-0)
+            self.progress_dialog.setRange(0, 0)
+        else:
+            # 3. 如果否 (即所有任务都是文件下载或上传)，则完全恢复原始逻辑
+            is_single_task = len(tasks) == 1
+            self.progress_dialog.setRange(0, 100 if is_single_task else 0)
 
         self.worker_thread = WorkerThread(tasks)
         self.worker_thread.progress.connect(self.progress_dialog.setValue)

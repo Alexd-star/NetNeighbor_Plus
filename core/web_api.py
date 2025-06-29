@@ -138,48 +138,82 @@ def iter_folder_as_zip(folder_path: str) -> Generator[bytes, None, None]:
 @app.get("/api/v1/download_folder/{share_name}")
 def download_folder(share_name: str, folder_path: str):
     """
-    以流式响应的方式下载文件夹 (终极健壮版)。
+    以最稳定的方式流式下载文件夹 (支持进度条并能智能降级)。
     """
-    absolute_path, target_share = get_safe_path_and_share(share_name,
-                                                          folder_path)
+    absolute_path, target_share = get_safe_path_and_share(share_name, folder_path)
 
     if "download" not in target_share.get("permissions", []):
-        raise HTTPException(
-            status_code=403,
-            detail="Download permission denied for this share."
-        )
-
+        raise HTTPException(status_code=403, detail="Download permission denied.")
     if not os.path.isdir(absolute_path):
         raise HTTPException(status_code=404, detail="Folder not found.")
 
-    folder_name = os.path.basename(os.path.normpath(absolute_path))
-    zip_generator = iter_folder_as_zip(absolute_path)
-
+    # --- 1. “无害”的预计算过程 ---
+    total_size = None
     try:
-        fallback_filename = folder_name.encode(
-            'ascii', 'ignore'
-        ).decode('ascii') or "download"
+        # 创建一个临时的、仅用于计算的实例
+        size_calculator_stream = ZipStream(compress_type=ZIP_STORED)
 
-        encoded_filename = urllib.parse.quote(folder_name)
+        # 模拟添加文件以计算大小
+        for root, _, files in os.walk(absolute_path):
+            for file in files:
+                disk_path = os.path.join(root, file)
+                archive_path = os.path.relpath(disk_path, absolute_path)
+                size_calculator_stream.add(disk_path, arcname=archive_path)
 
-        content_disposition = (
-            f'attachment; filename="{fallback_filename}.zip"; '
-            f"filename*=UTF-8''{encoded_filename}.zip"
-        )
+        # 获取计算出的总大小
+        total_size = size_calculator_stream.size
+        print(f"预计算大小成功: {total_size} bytes")
 
-        response_headers = {'Content-Disposition': content_disposition}
     except Exception as e:
-        print(f"创建 Content-Disposition 头部时出错: {e}")
-        response_headers = {
-            'Content-Disposition': f'attachment; filename="download.zip"'
-        }
+        # 如果计算过程中任何一个文件出问题，则放弃计算，并降级
+        print(f"警告: 无法预计算文件夹大小，将降级为不确定进度条。原因: {e}")
+        total_size = None
 
+    # --- 预计算过程结束 ---
+
+    # 2. 定义一个与您原始代码逻辑完全一致的、绝对可靠的生成器
+    def robust_zip_generator():
+        # 在生成器内部创建全新的实例，与计算过程完全隔离
+        streamer = ZipStream(compress_type=ZIP_STORED)
+
+        for root, _, files in os.walk(absolute_path):
+            for file in files:
+                try:
+                    disk_path = os.path.join(root, file)
+                    archive_path = os.path.relpath(disk_path, absolute_path)
+                    streamer.add(disk_path, arcname=archive_path)
+                except Exception as file_error:
+                    # 在流式传输时，如果遇到错误，只跳过单个文件，不影响整体
+                    print(f"警告: 流式传输时跳过文件 '{disk_path}'，原因: {file_error}")
+                    continue
+
+        # 迭代这个全新的实例，产出数据
+        for chunk in streamer:
+            yield chunk
+
+    # 3. 构建安全的响应头
+    folder_name = os.path.basename(os.path.normpath(absolute_path))
+
+    encoded_filename = urllib.parse.quote(folder_name, safe='')
+    ascii_fallback_filename = folder_name.encode('ascii', 'ignore').decode('ascii')
+    if not ascii_fallback_filename:
+        ascii_fallback_filename = "download"
+
+    content_disposition = (
+        f"attachment; filename=\"{ascii_fallback_filename}.zip\"; "
+        f"filename*=UTF-8''{encoded_filename}.zip"
+    )
+
+    response_headers = {'Content-Disposition': content_disposition}
+    if total_size is not None:
+        response_headers['Content-Length'] = str(total_size)
+
+    # 4. 返回最终的流式响应
     return StreamingResponse(
-        content=zip_generator,
+        content=robust_zip_generator(),
         media_type="application/zip",
         headers=response_headers
     )
-
 
 # --- 所有其他API端点保持不变 ---
 @app.get("/api/v1/ping")
