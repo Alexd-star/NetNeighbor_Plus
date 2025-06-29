@@ -136,3 +136,31 @@ QStatusBar::item {
 h4 {
     margin-bottom: 5px;
 }
+
+QProgressDialog {
+    background-color: #f0f0f0;
+    border: 1px solid #ccc;
+    border-radius: 8px;
+    font-size: 14px;
+}
+
+QProgressDialog QLabel {
+    color: #333;
+}
+
+QProgressBar {
+    border: 1px solid #bbb;
+    border-radius: 5px;
+    text-align: center;
+    background-color: #e0e0e0;
+    height: 20px;
+    font-weight: bold;
+    color: #555;
+}
+
+QProgressBar::chunk {
+    background-color: qlineargradient(x1: 0, y1: 0, x2: 1, y2: 0,
+                                    stop: 0 #4CAF50, stop: 1 #81C784);
+    border-radius: 4px;
+    margin: 0.5px;
+}
