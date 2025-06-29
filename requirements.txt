@@ -12,3 +12,4 @@ watchdog    # 新增：用于文件系统监控
 # GUI库
 PySide6
 httpx
+zipstream-ng

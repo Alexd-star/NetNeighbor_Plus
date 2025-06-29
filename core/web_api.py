@@ -1,20 +1,19 @@
 # 文件: core/web_api.py
 # 描述: 提供 FastAPI 应用实例和所有 HTTP API 端点。
-# (已按 PEP 8 规范格式化, 并修复跨线程事件循环问题)
+# (已使用最兼容的 API 调用方式, 彻底解决 zipstream-ng 的版本问题)
 
 import asyncio
-import io
 import json
 import os
-import tempfile
-import zipfile
-from typing import Any, Dict, List, Tuple
+import urllib.parse
+from typing import Any, Dict, List, Tuple, Generator
 
 from fastapi import (
-    BackgroundTasks, FastAPI, File, HTTPException, Request, UploadFile,
+    FastAPI, File, HTTPException, Request, UploadFile,
     WebSocket, WebSocketDisconnect
 )
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from zipstream import ZIP_STORED, ZipStream
 
 from .config_loader import load_config
 from .discovery import online_devices
@@ -59,31 +58,22 @@ app = FastAPI()
 
 @app.on_event("startup")
 async def startup_event():
-    """
-    在 FastAPI 应用启动时, 自动运行后台服务。
-    """
-    # --- 【核心修正】在这里创建属于当前事件循环的 Event ---
+    """在 FastAPI 应用启动时, 自动运行后台服务。"""
     loop = asyncio.get_running_loop()
     tcp_stop_event = asyncio.Event()
 
-    # 将新创建的 event 和 loop 存入 app.state, 供 AppController 使用
     app.state.tcp_stop_event = tcp_stop_event
     app.state.asyncio_loop = loop
 
-    # 从 AppController 之前存入的 app.state 中获取 tcp_port
     tcp_port = app.state.tcp_port
-
-    # 在当前事件循环中创建并运行TCP服务器任务
     loop.create_task(run_tcp_server(tcp_port, tcp_stop_event))
     print("Async TCP server task has been scheduled on the running event loop.")
 
 
 def get_safe_path_and_share(
-    share_name: str, sub_path: str = "/"
+        share_name: str, sub_path: str = "/"
 ) -> Tuple[str, Dict[str, Any]]:
-    """
-    安全地解析请求的路径, 防止路径遍历。
-    """
+    """安全地解析请求的路径, 防止路径遍历。"""
     all_shares = load_config(force_reload=True).get('shares', [])
     target_share = next(
         (s for s in all_shares if s.get("name") == share_name), None
@@ -107,28 +97,108 @@ def get_safe_path_and_share(
 
     return full_path, target_share
 
-# (为了简洁，这里省略了所有API端点，您无需改动它们, 它们和上一版完全一样)
+
+# --- 【终极核心修正】使用最基础、最兼容的API调用方式 ---
+def iter_folder_as_zip(folder_path: str) -> Generator[bytes, None, None]:
+    """
+    一个极其健壮的生成器函数, 使用最兼容的 API 来流式生成ZIP数据。
+    """
+    # 1. 创建一个空的 ZipStream, 明确指定压缩类型
+    streamer = ZipStream(compress_type=ZIP_STORED)
+
+    print(f"开始扫描并流式传输文件夹: {folder_path}")
+
+    # 2. 遍历所有可读文件
+    for root, _, files in os.walk(folder_path):
+        for file in files:
+            try:
+                disk_path = os.path.join(root, file)
+                if not os.access(disk_path, os.R_OK):
+                    print(f"警告: 文件不可读, 已跳过: {disk_path}")
+                    continue
+
+                archive_path = os.path.relpath(disk_path, folder_path)
+
+                # 3. 使用 .add() 方法将文件加入流中。
+                # 这个方法本身不产出数据。
+                streamer.add(disk_path, arcname=archive_path)
+
+            except Exception as e:
+                print(f"警告: 处理文件 '{file}' 时出错, 已跳过. 错误: {e}")
+                continue
+
+    # 4. 在所有文件都添加完毕后, 迭代 streamer 对象本身。
+    # 这个迭代过程会按顺序产出所有文件的数据块和最后的中央目录。
+    for chunk in streamer:
+        yield chunk
+
+    print("流式打包完成。")
+
+
+@app.get("/api/v1/download_folder/{share_name}")
+def download_folder(share_name: str, folder_path: str):
+    """
+    以流式响应的方式下载文件夹 (终极健壮版)。
+    """
+    absolute_path, target_share = get_safe_path_and_share(share_name,
+                                                          folder_path)
+
+    if "download" not in target_share.get("permissions", []):
+        raise HTTPException(
+            status_code=403,
+            detail="Download permission denied for this share."
+        )
+
+    if not os.path.isdir(absolute_path):
+        raise HTTPException(status_code=404, detail="Folder not found.")
+
+    folder_name = os.path.basename(os.path.normpath(absolute_path))
+    zip_generator = iter_folder_as_zip(absolute_path)
+
+    try:
+        fallback_filename = folder_name.encode(
+            'ascii', 'ignore'
+        ).decode('ascii') or "download"
+
+        encoded_filename = urllib.parse.quote(folder_name)
+
+        content_disposition = (
+            f'attachment; filename="{fallback_filename}.zip"; '
+            f"filename*=UTF-8''{encoded_filename}.zip"
+        )
+
+        response_headers = {'Content-Disposition': content_disposition}
+    except Exception as e:
+        print(f"创建 Content-Disposition 头部时出错: {e}")
+        response_headers = {
+            'Content-Disposition': f'attachment; filename="download.zip"'
+        }
+
+    return StreamingResponse(
+        content=zip_generator,
+        media_type="application/zip",
+        headers=response_headers
+    )
+
+
+# --- 所有其他API端点保持不变 ---
 @app.get("/api/v1/ping")
 async def ping():
-    """一个简单的健康检查端点。"""
     return JSONResponse(content={"message": "pong"})
 
 
 @app.websocket("/ws/events")
 async def websocket_endpoint(websocket: WebSocket):
-    """处理事件通知的 WebSocket 端点。"""
     await manager.connect(websocket)
     try:
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
         manager.disconnect(websocket)
-        print(f"WebSocket client {websocket.client} disconnected.")
 
 
 @app.post("/api/v1/internal/notify_shares_changed")
 async def notify_shares_changed(request: Request):
-    """(内部API) 当本机共享变化时, 通知所有WebSocket客户端。"""
     try:
         controller = request.app.state.controller
         event_data = {
@@ -138,20 +208,16 @@ async def notify_shares_changed(request: Request):
         await manager.broadcast(json.dumps(event_data))
         return {"status": "ok", "message": "Broadcast for share update sent."}
     except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Failed to broadcast: {e}"
-        )
+        raise HTTPException(status_code=500, detail=f"Failed to broadcast: {e}")
 
 
 @app.get("/api/v1/peers")
 def get_peers():
-    """获取当前发现的所有在线设备列表。"""
     return JSONResponse(content=online_devices)
 
 
 @app.get("/api/v1/shares")
 def list_shares():
-    """列出本机所有配置的共享文件夹及其权限。"""
     shares = load_config(force_reload=True).get('shares', [])
     share_list = [
         {"name": s.get("name"), "permissions": s.get("permissions", [])}
@@ -162,17 +228,13 @@ def list_shares():
 
 @app.get("/api/v1/files/{share_name}")
 def list_files(share_name: str, path: str = "/"):
-    """列出指定共享文件夹内指定路径下的文件和目录。"""
     request_path, target_share = get_safe_path_and_share(share_name, path)
-
     if "read" not in target_share.get("permissions", []):
         raise HTTPException(
             status_code=403, detail="Read permission denied for this share."
         )
-
     if not os.path.isdir(request_path):
         raise HTTPException(status_code=404, detail="Directory not found")
-
     try:
         file_list = []
         for item_name in os.listdir(request_path):
@@ -187,100 +249,39 @@ def list_files(share_name: str, path: str = "/"):
                 continue
         return JSONResponse(content=file_list)
     except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Failed to list files: {e}"
-        )
+        raise HTTPException(status_code=500, detail=f"Failed to list files: {e}")
 
 
 @app.get("/api/v1/download/{share_name}")
 async def download_file(share_name: str, file_path: str):
-    """下载单个文件。"""
     absolute_path, target_share = get_safe_path_and_share(share_name,
                                                           file_path)
-
     if "download" not in target_share.get("permissions", []):
         raise HTTPException(
             status_code=403,
             detail="Download permission denied for this share."
         )
-
     if not os.path.isfile(absolute_path):
         raise HTTPException(status_code=404, detail="File not found.")
-
     return FileResponse(
         absolute_path, filename=os.path.basename(absolute_path)
     )
 
 
-@app.get("/api/v1/download_folder/{share_name}")
-async def download_folder(
-    share_name: str,
-    folder_path: str,
-    background_tasks: BackgroundTasks
-):
-    """将文件夹打包成ZIP并提供下载。"""
-    absolute_path, target_share = get_safe_path_and_share(share_name,
-                                                          folder_path)
-
-    if "download" not in target_share.get("permissions", []):
-        raise HTTPException(
-            status_code=403,
-            detail="Download permission denied for this share."
-        )
-
-    if not os.path.isdir(absolute_path):
-        raise HTTPException(status_code=404, detail="Folder not found.")
-
-    folder_name = os.path.basename(os.path.normpath(absolute_path))
-    temp_zip_path = None
-
-    try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as tmp:
-            temp_zip_path = tmp.name
-
-        with zipfile.ZipFile(temp_zip_path, 'w',
-                             compression=zipfile.ZIP_STORED) as zf:
-            for root, _, files in os.walk(absolute_path):
-                for file in files:
-                    file_path_on_disk = os.path.join(root, file)
-                    archive_name = os.path.relpath(file_path_on_disk,
-                                                   absolute_path)
-                    zf.write(file_path_on_disk, archive_name)
-
-        background_tasks.add_task(os.unlink, temp_zip_path)
-
-        return FileResponse(
-            path=temp_zip_path,
-            media_type="application/zip",
-            filename=f"{folder_name}.zip"
-        )
-    except Exception as e:
-        if temp_zip_path and os.path.exists(temp_zip_path):
-            os.unlink(temp_zip_path)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to create folder archive: {e}"
-        )
-
-
 @app.post("/api/v1/upload/{share_name}")
 async def upload_file(
-    share_name: str, dest_path: str = "/", file: UploadFile = File(...)
+        share_name: str, dest_path: str = "/", file: UploadFile = File(...)
 ):
-    """上传单个文件到指定的共享目录。"""
     upload_dir, target_share = get_safe_path_and_share(share_name, dest_path)
-
     if "upload" not in target_share.get("permissions", []):
         raise HTTPException(
             status_code=403, detail="Upload permission denied for this share."
         )
-
     if not os.path.isdir(upload_dir):
         raise HTTPException(
             status_code=400,
             detail="Destination path is not a valid directory."
         )
-
     file_destination = os.path.join(upload_dir, file.filename)
     if not os.path.abspath(file_destination).startswith(
             os.path.abspath(upload_dir)):
@@ -288,7 +289,6 @@ async def upload_file(
             status_code=403,
             detail="Access denied: Invalid destination filename."
         )
-
     try:
         with open(file_destination, "wb") as buffer:
             while content := await file.read(1024 * 1024):
@@ -297,21 +297,17 @@ async def upload_file(
         raise HTTPException(
             status_code=500, detail=f"Could not save file: {e}"
         )
-
     return {"message": f"File '{file.filename}' uploaded successfully."}
 
 
 @app.post("/api/v1/create_dir/{share_name}")
 async def create_directory(share_name: str, path: str):
-    """在指定的共享文件夹中创建新的子目录。"""
     dir_path, target_share = get_safe_path_and_share(share_name, path)
-
     if "upload" not in target_share.get("permissions", []):
         raise HTTPException(
             status_code=403,
             detail="Upload permission denied (cannot create directory)."
         )
-
     try:
         os.makedirs(dir_path, exist_ok=True)
         return {"message": f"Directory '{path}' created or already exists."}
