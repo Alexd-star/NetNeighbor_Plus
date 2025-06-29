@@ -15,4 +15,4 @@ permissions = [ "read", "download", "upload",]
 
 [service]
 name = "ASUS-FX503vd"
-port = 8088
+port = 8080

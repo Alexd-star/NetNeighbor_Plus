@@ -5,7 +5,6 @@ import threading
 import asyncio
 
 # 从其他核心模块导入必要的组件
-from .config import config as app_config
 from .discovery import DiscoveryService
 from .web_api import app, manager  # 导入FastAPI应用实例和WebSocket管理器
 from .tcp_server import run_tcp_server

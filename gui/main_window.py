@@ -488,8 +488,8 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(page)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         welcome_label = QLabel("欢迎使用 邻里+")
-        font = QFont();
-        font.setPointSize(24);
+        font = QFont()
+        font.setPointSize(24)
         font.setBold(True)
         welcome_label.setFont(font)
         layout.addStretch()
@@ -523,7 +523,7 @@ class MainWindow(QMainWindow):
         all_shares = load_config(force_reload=True).get('shares', [])
         target_share = next((s for s in all_shares if s.get("name") == share_name), None)
         if not target_share: return
-        menu = QMenu();
+        menu = QMenu()
         permissions_menu = menu.addMenu("设置权限")
         current_perms = target_share.get("permissions", [])
         dl_action = QAction("可下载", self, checkable=True)
@@ -646,10 +646,10 @@ class MainWindow(QMainWindow):
             elif source == 'local':
                 # 处理来自本机服务的事件
                 if event == "peer_online":
-                    self.add_log_message(f"设备上线: {data.get('name')}", "🟢");
+                    self.add_log_message(f"设备上线: {data.get('name')}", "🟢")
                     self.update_device_list()
                 elif event == "peer_offline":
-                    self.add_log_message(f"设备下线: {data.get('name')}", "🔴");
+                    self.add_log_message(f"设备下线: {data.get('name')}", "🔴")
                     self.update_device_list()
             elif source == 'remote':
                 # 处理来自远程设备的事件
@@ -668,7 +668,7 @@ class MainWindow(QMainWindow):
         if size_bytes <= 0: return ""
         if size_bytes < 1024: return f"{size_bytes} B"
         i = int(math.floor(math.log(size_bytes, 1024)))
-        p = math.pow(1024, i);
+        p = math.pow(1024, i)
         s = round(size_bytes / p, 2)
         return f"{s} {('KB', 'MB', 'GB', 'TB')[i - 1]}"
 
@@ -1014,7 +1014,7 @@ class MainWindow(QMainWindow):
                                          QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                                          QMessageBox.StandardButton.No)
             if reply == QMessageBox.StandardButton.No:
-                event.ignore();
+                event.ignore()
                 return
             else:
                 self.worker_thread.stop()
@@ -1030,19 +1030,19 @@ class MainWindow(QMainWindow):
         self.my_shares_list_widget.clear()
         shares = load_config(force_reload=True).get("shares", [])
         if not shares:
-            item = QListWidgetItem("无共享文件夹");
+            item = QListWidgetItem("无共享文件夹")
             item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
             self.my_shares_list_widget.addItem(item)
             return
         for share in shares:
-            name = share.get('name', '未命名');
+            name = share.get('name', '未命名')
             permissions = share.get("permissions", [])
             parts = []
             if "read" in permissions: parts.append("可读")
             if "download" in permissions: parts.append("可下载")
             if "upload" in permissions: parts.append("可上传")
             perm_text = "/".join(parts) if parts else "无权限"
-            item = QListWidgetItem(f"{name} ({perm_text})");
-            item.setToolTip(f"本地路径: {share.get('path')}");
+            item = QListWidgetItem(f"{name} ({perm_text})")
+            item.setToolTip(f"本地路径: {share.get('path')}")
             item.setIcon(self.folder_icon)
             self.my_shares_list_widget.addItem(item)
