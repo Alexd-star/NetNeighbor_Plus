@@ -11,7 +11,7 @@ permissions = [ "download", "upload", "read",]
 [[shares]]
 name = "竞赛活动"
 path = "D:\\Aria 学习\\研究生\\竞赛活动"
-permissions = [ "read", "download", "upload",]
+permissions = [ "read", "upload", "download",]
 
 [service]
 name = "ASUS-FX503vd"

@@ -1,25 +1,44 @@
-# 文件: gui/settings_window.py (修复)
+# 文件: gui/settings_window.py
+# 描述: 提供应用设置窗口，用于修改设备名、端口和共享文件夹。
+
 import os
 import toml
 import copy
-from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QListWidget, QPushButton,
-                               QFileDialog, QMessageBox, QLineEdit, QCheckBox, QLabel, QListWidgetItem,
-                               QWidget, QFrame, QGroupBox)
+from typing import Optional
+
+from PySide6.QtWidgets import (
+    QDialog, QVBoxLayout, QHBoxLayout, QListWidget, QPushButton,
+    QFileDialog, QMessageBox, QLineEdit, QCheckBox, QLabel,
+    QListWidgetItem, QWidget, QFrame, QGroupBox
+)
 from PySide6.QtCore import Qt
+
 from core.config_loader import CONFIG_PATH
 from .app_controller import AppController
 
 
 class SettingsWindow(QDialog):
-    def __init__(self, controller: AppController, parent=None):
+    """
+    设置窗口类，允许用户修改应用配置。
+
+    包括服务设置（设备名、端口）和共享文件夹管理（添加、移除、修改权限）。
+    """
+
+    def __init__(self, controller: AppController, parent: Optional[QWidget] = None):
+        """
+        初始化设置窗口。
+
+        Args:
+            controller: 应用主控制器实例，用于获取当前配置和状态。
+            parent: 父窗口部件。
+        """
         super().__init__(parent)
         self.controller = controller
+        # 创建配置的深拷贝，以便在不影响正在运行的服务的情况下进行修改
         self.config_data_copy = copy.deepcopy(self.controller.running_config)
-
-        # --- 【核心修复】修改权限正常化逻辑 ---
         self.normalize_permissions_on_load()
+        self.current_selected_path: Optional[str] = None
 
-        self.current_selected_path = None
         self.setWindowTitle("设置中心")
         self.setMinimumSize(600, 400)
         self.setup_ui()
@@ -27,24 +46,25 @@ class SettingsWindow(QDialog):
 
     def normalize_permissions_on_load(self):
         """
-        【修复】加载时规整权限数据。
-        只确保每个共享都存在 permissions 键，如果不存在，则赋予默认权限。
-        这可以兼容非常旧的、连 permissions 键都没有的配置。
+        加载时规整共享文件夹的权限数据。
+
+        确保每个共享项都包含一个 'permissions' 键。
+        如果不存在，则赋予默认的完全权限，以兼容旧版配置。
+        同时确保基础的 'read' 权限始终存在。
         """
         if "shares" in self.config_data_copy:
             for share in self.config_data_copy["shares"]:
-                # 如果一个共享完全没有 'permissions' 键，说明它是最旧的格式，
-                # 或者数据已损坏，此时我们为其赋予所有默认权限。
                 if "permissions" not in share:
                     share["permissions"] = ["read", "download", "upload"]
-                # 确保 'read' 基础权限总是存在
                 elif "read" not in share["permissions"]:
                     share["permissions"].append("read")
 
     def setup_ui(self):
+        """创建并布局窗口中的所有UI组件。"""
         main_layout = QVBoxLayout(self)
 
-        service_box = QWidget()
+        # 服务设置区域
+        service_box = QGroupBox("服务设置")
         service_layout = QHBoxLayout(service_box)
         service_layout.addWidget(QLabel("<b>本机设备名:</b>"))
         self.device_name_edit = QLineEdit()
@@ -55,12 +75,17 @@ class SettingsWindow(QDialog):
         service_layout.addWidget(self.port_edit)
         main_layout.addWidget(service_box)
 
+        # 分割线
         line = QFrame()
-        line.setFrameShape(QFrame.HLine)
-        line.setFrameShadow(QFrame.Sunken)
+        line.setFrameShape(QFrame.Shape.HLine)
+        line.setFrameShadow(QFrame.Shadow.Sunken)
         main_layout.addWidget(line)
 
-        share_layout = QHBoxLayout()
+        # 共享管理区域
+        share_management_box = QGroupBox("共享文件夹管理")
+        share_layout = QHBoxLayout(share_management_box)
+
+        # 左侧：共享列表和操作按钮
         left_widget = QWidget()
         left_layout = QVBoxLayout(left_widget)
         left_layout.addWidget(QLabel("<b>共享的文件夹:</b>"))
@@ -78,36 +103,29 @@ class SettingsWindow(QDialog):
         left_layout.addLayout(add_remove_layout)
         share_layout.addWidget(left_widget, stretch=1)
 
-        # --- 【UI增强】重构右侧共享详情区域 ---
-        right_widget = QWidget()
+        # 右侧：共享详情
+        right_widget = QGroupBox("共享详情")
         right_layout = QVBoxLayout(right_widget)
-        right_layout.addWidget(QLabel("<b>共享详情:</b>"))
-
         right_layout.addWidget(QLabel("共享别名:"))
         self.share_name_edit = QLineEdit()
-        self.share_name_edit.setPlaceholderText("共享别名 (例如：我的文档)")
+        self.share_name_edit.setPlaceholderText("例如：我的文档")
         right_layout.addWidget(self.share_name_edit)
-
         self.share_path_label = QLabel("路径: (不可修改)")
         right_layout.addWidget(self.share_path_label)
 
-        # 使用 GroupBox 美化权限设置
         permissions_group = QGroupBox("权限设置")
         permissions_layout = QVBoxLayout(permissions_group)
-
         self.allow_download_checkbox = QCheckBox("允许其他设备下载文件")
         self.allow_upload_checkbox = QCheckBox("允许其他设备上传文件")
-
         permissions_layout.addWidget(self.allow_download_checkbox)
         permissions_layout.addWidget(self.allow_upload_checkbox)
-
         right_layout.addWidget(permissions_group)
         right_layout.addStretch()
         share_layout.addWidget(right_widget, stretch=1)
-        # ------------------------------------
 
-        main_layout.addLayout(share_layout)
+        main_layout.addWidget(share_management_box)
 
+        # 底部保存/取消按钮
         button_layout = QHBoxLayout()
         button_layout.addStretch()
         self.save_button = QPushButton("保存并应用")
@@ -118,42 +136,57 @@ class SettingsWindow(QDialog):
         button_layout.addWidget(self.cancel_button)
         main_layout.addLayout(button_layout)
 
+        # 连接信号到槽函数
         self.share_name_edit.textChanged.connect(self.update_config_in_memory)
-        # 将两个复选框的信号都连接到更新函数
-        self.allow_download_checkbox.stateChanged.connect(self.update_config_in_memory)
-        self.allow_upload_checkbox.stateChanged.connect(self.update_config_in_memory)
+        self.allow_download_checkbox.stateChanged.connect(
+            self.update_config_in_memory
+        )
+        self.allow_upload_checkbox.stateChanged.connect(
+            self.update_config_in_memory
+        )
 
         self._set_details_enabled(False)
 
-    def _set_details_enabled(self, enabled):
+    def _set_details_enabled(self, enabled: bool):
+        """启用或禁用右侧的共享详情编辑控件。"""
         self.share_name_edit.setEnabled(enabled)
         self.allow_download_checkbox.setEnabled(enabled)
         self.allow_upload_checkbox.setEnabled(enabled)
 
     def load_config_to_ui(self):
+        """将内存中的配置数据加载到UI界面上。"""
         device_name_base = self.controller.device_name
         if self.controller.port_override:
-            device_name_base = device_name_base.replace(f'-{self.controller.port}', '')
+            device_name_base = device_name_base.replace(
+                f'-{self.controller.port}', ''
+            )
         self.device_name_edit.setText(device_name_base)
+        self.device_name_edit.setToolTip("设备名更改需要重启应用才能生效。")
 
         self.port_edit.setText(str(self.controller.port))
-        # 如果端口被命令行覆盖，则禁用编辑，防止用户误操作
-        self.port_edit.setEnabled(not self.controller.port_override)
-        self.port_edit.setToolTip("端口更改需要重启应用才能生效。")
-        self.device_name_edit.setToolTip("设备名更改需要重启应用才能生效。")
+        if self.controller.port_override:
+            self.port_edit.setEnabled(False)
+            self.port_edit.setToolTip(
+                "当前端口由命令行参数覆盖，无法在此修改。"
+            )
+        else:
+            self.port_edit.setEnabled(True)
+            self.port_edit.setToolTip("端口更改需要重启应用才能生效。")
 
         self.share_list_widget.clear()
         self._clear_details()
         for share in self.config_data_copy.get("shares", []):
-            item = QListWidgetItem(share.get("name", os.path.basename(share.get("path"))))
-            item.setData(Qt.UserRole, share.get("path"))
+            item_text = share.get("name", os.path.basename(share.get("path")))
+            item = QListWidgetItem(item_text)
+            item.setData(Qt.ItemDataRole.UserRole, share.get("path"))
             self.share_list_widget.addItem(item)
 
     def _clear_details(self):
+        """清空并禁用右侧共享详情区域。"""
         # 阻断信号，防止在清空UI时意外触发更新函数
-        self.share_name_edit.blockSignals(True)
-        self.allow_download_checkbox.blockSignals(True)
-        self.allow_upload_checkbox.blockSignals(True)
+        for widget in [self.share_name_edit, self.allow_download_checkbox,
+                       self.allow_upload_checkbox]:
+            widget.blockSignals(True)
 
         self.share_name_edit.clear()
         self.share_path_label.setText("路径: (请在左侧选择一项)")
@@ -162,76 +195,76 @@ class SettingsWindow(QDialog):
         self._set_details_enabled(False)
         self.current_selected_path = None
 
-        # 恢复信号
-        self.share_name_edit.blockSignals(False)
-        self.allow_download_checkbox.blockSignals(False)
-        self.allow_upload_checkbox.blockSignals(False)
+        for widget in [self.share_name_edit, self.allow_download_checkbox,
+                       self.allow_upload_checkbox]:
+            widget.blockSignals(False)
 
     def on_share_selected(self, item: QListWidgetItem):
-        self.current_selected_path = item.data(Qt.UserRole)
+        """当用户在左侧列表中选择一个共享项时，更新右侧详情。"""
+        self.current_selected_path = item.data(Qt.ItemDataRole.UserRole)
         share_found = next(
-            (s for s in self.config_data_copy.get("shares", []) if s.get("path") == self.current_selected_path), None)
+            (s for s in self.config_data_copy.get("shares", [])
+             if s.get("path") == self.current_selected_path),
+            None
+        )
 
         if share_found:
-            # 阻断信号，避免在设置UI时触发更新
-            self.share_name_edit.blockSignals(True)
-            self.allow_download_checkbox.blockSignals(True)
-            self.allow_upload_checkbox.blockSignals(True)
+            for widget in [self.share_name_edit, self.allow_download_checkbox,
+                           self.allow_upload_checkbox]:
+                widget.blockSignals(True)
 
             self.share_name_edit.setText(share_found.get("name", ""))
             self.share_path_label.setText(f"路径: {self.current_selected_path}")
-
-            # ---【核心修复】直接根据配置文件的真实状态设置勾选 ---
             permissions = share_found.get("permissions", [])
             self.allow_download_checkbox.setChecked("download" in permissions)
             self.allow_upload_checkbox.setChecked("upload" in permissions)
             self._set_details_enabled(True)
 
-            # 恢复信号
-            self.share_name_edit.blockSignals(False)
-            self.allow_download_checkbox.blockSignals(False)
-            self.allow_upload_checkbox.blockSignals(False)
+            for widget in [self.share_name_edit, self.allow_download_checkbox,
+                           self.allow_upload_checkbox]:
+                widget.blockSignals(False)
 
     def update_config_in_memory(self):
-        if not self.current_selected_path: return
+        """当用户修改共享详情时，实时更新内存中的配置副本。"""
+        if not self.current_selected_path:
+            return
 
         for share in self.config_data_copy.get("shares", []):
             if share.get("path") == self.current_selected_path:
                 share["name"] = self.share_name_edit.text()
-
-                # ---【核心修复】根据复选框状态精确构建权限列表 ---
-                permissions = ["read"]  # 浏览权限是基础，始终需要
+                permissions = ["read"]  # 浏览是基础权限
                 if self.allow_download_checkbox.isChecked():
                     permissions.append("download")
                 if self.allow_upload_checkbox.isChecked():
                     permissions.append("upload")
-
-                share["permissions"] = list(set(permissions))  # 去重以防万一
+                share["permissions"] = list(set(permissions))
 
                 # 更新左侧列表的显示名称
                 for i in range(self.share_list_widget.count()):
                     item = self.share_list_widget.item(i)
-                    if item.data(Qt.UserRole) == self.current_selected_path:
+                    if item.data(Qt.ItemDataRole.UserRole) == self.current_selected_path:
                         item.setText(share["name"])
                         break
                 break
 
     def add_share(self):
-        path = QFileDialog.getExistingDirectory(self, "选择要共享的文件夹", os.path.expanduser("~"))
-        if not path: return
+        """弹出一个文件对话框，让用户选择并添加一个新的共享文件夹。"""
+        path = QFileDialog.getExistingDirectory(
+            self, "选择要共享的文件夹", os.path.expanduser("~")
+        )
+        if not path:
+            return
 
         path = os.path.normpath(path)
         if any(s['path'] == path for s in self.config_data_copy.get("shares", [])):
             QMessageBox.warning(self, "错误", "这个文件夹已经被共享了。")
             return
 
-        # --- 【需求实现】新添加的共享默认拥有所有权限 ---
         new_share = {
             "name": os.path.basename(path),
             "path": path,
             "permissions": ["read", "download", "upload"]
         }
-
         if "shares" not in self.config_data_copy:
             self.config_data_copy["shares"] = []
 
@@ -242,23 +275,32 @@ class SettingsWindow(QDialog):
         self.on_share_selected(self.share_list_widget.currentItem())
 
     def remove_share(self):
+        """移除当前在左侧列表中选中的共享文件夹。"""
         current_item = self.share_list_widget.currentItem()
         if not current_item:
             QMessageBox.warning(self, "提示", "请先在左侧选择一个要移除的共享。")
             return
-        path_to_remove = current_item.data(Qt.UserRole)
-        self.config_data_copy["shares"] = [s for s in self.config_data_copy["shares"] if s["path"] != path_to_remove]
+
+        path_to_remove = current_item.data(Qt.ItemDataRole.UserRole)
+        self.config_data_copy["shares"] = [
+            s for s in self.config_data_copy["shares"]
+            if s["path"] != path_to_remove
+        ]
         self.load_config_to_ui()
 
     def save_and_accept(self):
-        # 3. 【核心修复】保存时，不写入被命令行覆盖的端口，防止污染配置文件
+        """校验用户输入，保存配置到文件，并关闭窗口。"""
         service_config = self.config_data_copy.setdefault("service", {})
         service_config["name"] = self.device_name_edit.text()
 
-        # 只有在端口未被命令行覆盖时，才允许从UI保存端口号
+        # 只有在端口未被命令行覆盖时，才保存端口号
         if not self.controller.port_override:
             try:
-                service_config["port"] = int(self.port_edit.text())
+                port_val = int(self.port_edit.text())
+                if not (1024 <= port_val <= 65535):
+                    QMessageBox.critical(self, "错误", "端口号必须在 1024 和 65535 之间！")
+                    return
+                service_config["port"] = port_val
             except (ValueError, KeyError):
                 QMessageBox.critical(self, "错误", "端口必须是一个有效的数字！")
                 return
@@ -266,6 +308,6 @@ class SettingsWindow(QDialog):
         try:
             with open(CONFIG_PATH, "w", encoding='utf-8') as f:
                 toml.dump(self.config_data_copy, f)
-            self.accept()
+            self.accept()  # 关闭对话框并返回 QDialog.Accepted
         except Exception as e:
             QMessageBox.critical(self, "错误", f"无法保存配置文件: {e}")
