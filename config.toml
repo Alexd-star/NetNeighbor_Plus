@@ -5,7 +5,7 @@ permissions = [ "download", "upload", "read", "write",]
 
 [[shares]]
 name = "Photos Read-Only"
-path = "D:/test_file/documents/photos"
+path = "D:/test_file/photos"
 permissions = [ "download", "upload", "read",]
 
 [[shares]]
