@@ -1,4 +1,4 @@
-# 文件: gui/main_window.py (优化)
+# 文件: gui/main_window.py (完整修复版)
 import os
 import socket
 import json
@@ -21,6 +21,7 @@ from .app_controller import AppController
 from core.config_loader import load_config, get_config
 
 
+# --- 【核心修复】重写 WebSocketClientThread 以实现可靠的线程停止 ---
 class WebSocketClientThread(QThread):
     message_received = Signal(str, str)
 
@@ -29,11 +30,14 @@ class WebSocketClientThread(QThread):
         self.uri = uri
         self.source = source
         self._is_running = True
+        self.loop = None
+        self.task = None
 
     async def listen(self):
         while self._is_running:
             try:
-                async with websockets.connect(self.uri, open_timeout=5) as websocket:
+                # 增加连接和关闭超时，防止长时间阻塞
+                async with websockets.connect(self.uri, open_timeout=5, close_timeout=5) as websocket:
                     print(f"WebSocket ({self.source}) 已连接到 {self.uri}")
                     self.message_received.emit(json.dumps({"event": f"ws_{self.source}_connected"}), self.source)
                     while self._is_running:
@@ -41,26 +45,57 @@ class WebSocketClientThread(QThread):
                             message = await asyncio.wait_for(websocket.recv(), timeout=1.0)
                             self.message_received.emit(message, self.source)
                         except asyncio.TimeoutError:
-                            continue
+                            # 超时是正常的，它让我们有机会检查 self._is_running 标志位
+                            await asyncio.sleep(0.1)
+                        except websockets.exceptions.ConnectionClosed:
+                            if self._is_running:
+                                print(f"WebSocket ({self.source}) 连接已关闭。")
+                            break  # 中断内层循环，将尝试重连
+            except asyncio.CancelledError:
+                # 这是我们主动停止线程时预期的异常，直接退出循环
+                break
             except Exception as e:
                 if self._is_running:
-                    print(f"WebSocket ({self.source}) 连接错误: {e}。5秒后重连...")
+                    print(f"WebSocket ({self.source}) 连接错误: {e}。 5秒后重连...")
                     self.message_received.emit(json.dumps({"event": f"ws_{self.source}_disconnected"}), self.source)
-                    await asyncio.sleep(5)
+                    # 在重连等待期间也检查停止标志
+                    for _ in range(50):
+                        if not self._is_running: break
+                        await asyncio.sleep(0.1)
 
     def run(self):
         try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(self.listen())
+            self.loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self.loop)
+            self.task = self.loop.create_task(self.listen())
+            self.loop.run_until_complete(self.task)
+        except asyncio.CancelledError:
+            # 任务被取消是正常的停止流程，安静地处理
+            pass
         except Exception as e:
-            print(f"WebSocket ({self.source}) 线程启动失败: {e}")
+            if self._is_running:
+                print(f"WebSocket ({self.source}) 线程发生意外错误: {e}")
+        finally:
+            if self.loop.is_running():
+                self.loop.stop()
+            self.loop.close()
+            print(f"WebSocket ({self.source}) 线程已干净地终止。")
 
     def stop(self):
-        print(f"正在请求WebSocket ({self.source}) 线程停止...")
+        if not self.isRunning():
+            return
+
+        print(f"正在请求停止 WebSocket ({self.source}) 线程...")
         self._is_running = False
-        self.quit()
-        self.wait(1000)
+
+        if self.loop and self.task and not self.task.done():
+            # 使用线程安全的方式请求取消 asyncio 任务
+            self.loop.call_soon_threadsafe(self.task.cancel)
+
+        # 等待线程真正执行完毕
+        if not self.wait(2000):  # 等待最多2秒
+            print(f"警告: WebSocket ({self.source}) 线程在超时后仍在运行。将强制终止。")
+            self.terminate()  # 作为最后手段
 
 
 class WorkerThread(QThread):
@@ -69,7 +104,7 @@ class WorkerThread(QThread):
     error = Signal(str)
 
     def __init__(self, task_type, **kwargs):
-        super().__init__();
+        super().__init__()
         self.task_type, self.kwargs = task_type, kwargs
 
     def run(self):
@@ -116,8 +151,7 @@ class WorkerThread(QThread):
             downloaded_size = 0
             with open(save_path, 'wb') as f:
                 while downloaded_size < total_size:
-                    # 【性能优化】调整TCP缓冲区大小
-                    chunk = s.recv(64 * 1024)  # 64KB chunk
+                    chunk = s.recv(64 * 1024)
                     if not chunk: break
                     f.write(chunk)
                     downloaded_size += len(chunk)
@@ -167,8 +201,6 @@ class MainWindow(QMainWindow):
         self.setup_timers()
         self.setup_websocket()
         self.status_bar_label.setText("就绪. 正在扫描局域网设备...")
-
-        # 【修复】确保在服务启动后，也主动更新一次UI
         self.update_local_status_display()
         self.update_device_list()
 
@@ -193,7 +225,6 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("邻里+ (NetNeighbor Plus)");
         self.setGeometry(100, 100, 1200, 700)
         self.setWindowIcon(self.style().standardIcon(QStyle.SP_ComputerIcon))
-        # 【修复点2】实现窗口居中
         self.resize(1200, 700)
         try:
             center_point = self.screen().availableGeometry().center()
@@ -201,7 +232,6 @@ class MainWindow(QMainWindow):
             frame_geometry.moveCenter(center_point)
             self.move(frame_geometry.topLeft())
         except AttributeError:
-            # 在某些环境下 self.screen() 可能失败，提供一个回退方案
             self.setGeometry(100, 100, 1200, 700)
 
     def setup_ui(self):
@@ -220,29 +250,22 @@ class MainWindow(QMainWindow):
         about_action.triggered.connect(self.show_about_dialog)
         help_menu.addAction(about_action)
 
-        # --- 【UI改造】美化本机状态显示 ---
         my_status_box = QGroupBox("本机状态")
         my_status_box.setObjectName("StatusGroupBox")
         my_status_layout = QHBoxLayout(my_status_box)
 
-        # 使用 QLabel 来显示动态获取的设备名
         self.device_name_label = QLabel("设备名: 正在检测...")
         self.device_name_label.setToolTip("当前设备的网络名称")
-
-        # 新增 QLabel 用于显示设备类型
         self.device_type_label = QLabel("类型: 未知")
         self.device_type_label.setToolTip("根据操作系统判断的设备类型")
-
-        # 新增 QLabel 用于显示 IP 地址
         my_ip_label = QLabel(f"IP地址: {self.my_ip}:{self.controller.port}")
 
         my_status_layout.addWidget(self.device_name_label)
-        my_status_layout.addSpacing(20)  # 增加一些间距
+        my_status_layout.addSpacing(20)
         my_status_layout.addWidget(self.device_type_label)
-        my_status_layout.addStretch()  # 弹簧，将IP地址推到最右边
+        my_status_layout.addStretch()
         my_status_layout.addWidget(my_ip_label)
         main_layout.addWidget(my_status_box)
-        # -----------------------------------
 
         interaction_layout = QHBoxLayout()
         main_layout.addLayout(interaction_layout, stretch=1)
@@ -283,11 +306,9 @@ class MainWindow(QMainWindow):
         interaction_layout.addWidget(self.right_stack, stretch=1)
 
         self.welcome_page = self.create_welcome_page()
-
         self.file_browser_page = QWidget()
         right_layout = QVBoxLayout(self.file_browser_page)
         right_layout.setContentsMargins(10, 10, 0, 0)
-
         self.right_stack.addWidget(self.welcome_page)
         self.right_stack.addWidget(self.file_browser_page)
 
@@ -336,16 +357,9 @@ class MainWindow(QMainWindow):
         self.status_bar.addWidget(self.status_bar_label, 1)
 
     def update_local_status_display(self):
-        """
-        根据controller中最新的动态信息，刷新本机状态UI。
-        """
         print("UI接到通知，正在更新本机状态显示...")
-
-        # 从控制器获取最新的、正确的设备名
         device_name = self.controller.device_name
         self.device_name_label.setText(f"<b>设备名:</b> {device_name}")
-
-        # 从控制器获取最新的设备类型
         device_type = self.controller.device_properties.get('dev_type', '未知')
         self.device_type_label.setText(f"<b>类型:</b> {device_type}")
         self.device_type_label.setToolTip(
@@ -355,20 +369,16 @@ class MainWindow(QMainWindow):
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setAlignment(Qt.AlignCenter)
-
         welcome_label = QLabel("欢迎使用 邻里+")
         font = QFont();
         font.setPointSize(24);
         font.setBold(True)
         welcome_label.setFont(font)
         welcome_label.setAlignment(Qt.AlignCenter)
-
         step1_label = QLabel("<b>第1步:</b> 从左侧列表中选择一个在线设备")
         step1_label.setAlignment(Qt.AlignCenter)
-
         step2_label = QLabel("<b>第2步:</b> 选择该设备的共享文件夹即可开始浏览")
         step2_label.setAlignment(Qt.AlignCenter)
-
         layout.addStretch()
         layout.addWidget(welcome_label)
         layout.addSpacing(20)
@@ -376,16 +386,13 @@ class MainWindow(QMainWindow):
         layout.addSpacing(10)
         layout.addWidget(step2_label)
         layout.addStretch()
-
         return page
 
     def show_my_shares_context_menu(self, pos):
         item = self.my_shares_list_widget.itemAt(pos)
         if not item or item.text() == "无共享文件夹":
             return
-
         share_name = item.text().split(' (')[0]
-
         menu = QMenu()
         remove_action = QAction(self.style().standardIcon(QStyle.SP_DialogCancelButton), "移除此共享", self)
         remove_action.triggered.connect(lambda: self.remove_local_share(share_name))
@@ -401,7 +408,6 @@ class MainWindow(QMainWindow):
 
         current_shares = get_config().get("shares", [])
         new_shares = [s for s in current_shares if s.get("name") != share_name_to_remove]
-
         config = get_config()
         config['shares'] = new_shares
         from core.config_loader import CONFIG_PATH
@@ -419,7 +425,6 @@ class MainWindow(QMainWindow):
         self.controller.restart_file_watcher()
         if self.api_client:
             self.api_client.notify_shares_changed()
-
         self.add_log_message(f"已停止共享: {share_name_to_remove}", "️")
 
     def setup_timers(self):
@@ -459,7 +464,7 @@ class MainWindow(QMainWindow):
                           "<b>邻里+ (NetNeighbor Plus)</b><br><br>"
                           "一个基于 Python 和 PySide6 的局域网文件共享工具。<br>"
                           "旨在提供一个简单、轻量、跨平台的本地网络文件传输解决方案。<br><br>"
-                          "版本: 1.4.0 (Performance & UX)")
+                          "版本: 1.5.0 (Crash Fix)")
 
     def add_log_message(self, message: str, icon: str = "ℹ️"):
         from datetime import datetime
@@ -475,12 +480,9 @@ class MainWindow(QMainWindow):
                 if event == "ws_local_connected":
                     self.add_log_message("已连接到本机事件服务。", "✅")
                 elif event == "peer_online":
-                    self.add_log_message(f"设备已上线: {data.get('name')}", "🟢")
-                    self.update_device_list()
+                    self.add_log_message(f"设备已上线: {data.get('name')}", "🟢"); self.update_device_list()
                 elif event == "peer_offline":
-                    self.add_log_message(f"设备已下线: {data.get('name')}", "🔴")
-                    self.update_device_list()
-
+                    self.add_log_message(f"设备已下线: {data.get('name')}", "🔴"); self.update_device_list()
             elif source == 'remote':
                 if event == "ws_remote_connected":
                     self.add_log_message("已连接到远程设备事件服务。", "🔗")
@@ -492,13 +494,11 @@ class MainWindow(QMainWindow):
                 elif event == "refresh_files":
                     self.add_log_message("当前查看的设备文件系统变更，自动刷新...", "🔄")
                     self.refresh_current_file_view()
-
         except json.JSONDecodeError:
             print(f"收到无法解析的WebSocket消息 ({source}): {message}")
 
     def format_size(self, size_bytes):
-        if size_bytes <= 0:
-            return ""
+        if size_bytes <= 0: return ""
         size_name = ("B", "KB", "MB", "GB", "TB")
         i = int(math.floor(math.log(size_bytes, 1024)))
         p = math.pow(1024, i)
@@ -507,15 +507,11 @@ class MainWindow(QMainWindow):
 
     def show_file_context_menu(self, pos):
         if not self.active_peer_client or not self.device_list_widget.currentItem(): return
-        current_service_name = self.device_list_widget.currentItem().data(100)
-        if current_service_name not in self.online_devices_data: return
-
         selected_items = self.file_table_widget.selectedItems()
         if not selected_items: return
         selected_row = self.file_table_widget.row(selected_items[0])
         item_type = self.file_table_widget.item(selected_row, 1).text()
         if item_type == "文件夹": return
-
         menu = QMenu()
         download_action = QAction(self.download_icon, "下载", self)
         download_action.triggered.connect(self.handle_download_action)
@@ -523,62 +519,19 @@ class MainWindow(QMainWindow):
         menu.exec(self.file_table_widget.mapToGlobal(pos))
 
     def handle_download_action(self):
-        if not self.device_list_widget.currentItem():
-            QMessageBox.warning(self, "操作无效", "请先选择一个设备。")
-            return
-
-        current_service_name = self.device_list_widget.currentItem().data(100)
-        if current_service_name not in self.online_devices_data:
-            QMessageBox.critical(self, "操作失败", "设备已离线，无法执行下载。")
-            self.update_device_list()
-            return
-
         selected_row = self.file_table_widget.currentRow()
         if selected_row < 0: return
-
         file_name = self.file_table_widget.item(selected_row, 0).text()
-        size_str = self.file_table_widget.item(selected_row, 2).data(Qt.UserRole)
-        file_size = int(size_str)
-
         remote_file_path = "/".join(self.active_path_stack + [file_name])
-
         save_path, _ = QFileDialog.getSaveFileName(self, "保存文件", os.path.join(os.path.expanduser('~'), file_name))
         if not save_path: return
-
-        if not self.active_peer_client or not self.share_selector_combo.currentText():
-            QMessageBox.warning(self, "操作失败", "无法执行下载，因为尚未连接到有效的设备或共享。")
-            return
-
-        current_share = self.share_selector_combo.currentText()
-        TCP_THRESHOLD = 20 * 1024 * 1024
-
-        device_data = self.online_devices_data.get(current_service_name, {})
-        tcp_port_str = device_data.get("properties", {}).get("tcp_port")
-
-        if file_size >= TCP_THRESHOLD and tcp_port_str:
-            task_args = {'tcp_host': device_data['address'], 'tcp_port': int(tcp_port_str),
-                         'header': {"action": "download", "share_name": current_share, "file_path": remote_file_path},
-                         'save_path': save_path}
-            self.start_worker_thread("download_tcp", "正在高速下载...", task_args)
-        else:
-            task_args = {'peer_client': self.active_peer_client, 'share_name': current_share,
-                         'remote_path': remote_file_path, 'save_path': save_path}
-            self.start_worker_thread("download_http", "正在下载...", task_args)
+        task_args = {'peer_client': self.active_peer_client, 'share_name': self.share_selector_combo.currentText(),
+                     'remote_path': remote_file_path, 'save_path': save_path}
+        self.start_worker_thread("download_http", "正在下载...", task_args)
 
     def handle_upload_action(self):
-        if not self.device_list_widget.currentItem():
-            QMessageBox.warning(self, "操作无效", "请先选择一个设备。")
-            return
-
-        current_service_name = self.device_list_widget.currentItem().data(100)
-        if current_service_name not in self.online_devices_data:
-            QMessageBox.critical(self, "操作失败", "设备已离线，无法执行上传。")
-            self.update_device_list()
-            return
-
         local_file_path, _ = QFileDialog.getOpenFileName(self, "选择要上传的文件")
         if not local_file_path: return
-
         self.add_log_message(f"开始上传文件: {os.path.basename(local_file_path)}", "⬆️")
         task_args = {'peer_client': self.active_peer_client,
                      'share_name': self.share_selector_combo.currentText(),
@@ -590,18 +543,15 @@ class MainWindow(QMainWindow):
         if self.worker_thread and self.worker_thread.isRunning():
             QMessageBox.warning(self, "任务正在进行", "当前已有文件在传输中，请等待完成后再试。")
             return
-
         self.progress_dialog = QProgressDialog(progress_title, "取消", 0, 100, self)
         self.progress_dialog.setWindowModality(Qt.WindowModal)
         self.progress_dialog.setAutoClose(False)
         self.progress_dialog.setAutoReset(False)
-
         self.worker_thread = WorkerThread(task_type, **kwargs)
         self.worker_thread.progress.connect(self.progress_dialog.setValue)
         self.worker_thread.finished.connect(self.on_worker_finished)
         self.worker_thread.error.connect(self.on_worker_error)
         self.progress_dialog.canceled.connect(self.worker_thread.terminate)
-
         self.worker_thread.start()
         self.progress_dialog.show()
 
@@ -635,29 +585,15 @@ class MainWindow(QMainWindow):
         if not self.active_peer_client or not self.share_selector_combo.currentText():
             self.update_file_table(None)
             return
-
-        if not self.device_list_widget.currentItem():
-            self.clear_active_peer_view()
-            return
-
-        current_service_name = self.device_list_widget.currentItem().data(100)
-        if current_service_name not in self.online_devices_data:
-            self.clear_active_peer_view()
-            QMessageBox.information(self, "提示", "设备已离线。")
-            return
-
         current_path = "/" + "/".join(self.active_path_stack)
         self.current_path_label.setText(current_path)
         self.back_button.setEnabled(bool(self.active_path_stack))
-
         files = self.active_peer_client.get_files(self.share_selector_combo.currentText(), current_path)
         self.update_file_table(files)
 
     def update_device_list(self):
-        """【性能优化】使用增量更新来修改设备列表，避免闪烁和性能问题"""
         if not self.api_client: return
-
-        peers = self.api_client.get_peers() # 从后端获取在线设备
+        peers = self.api_client.get_peers()
         new_online_data = {}
         if peers:
             my_full_service_name = f"{self.controller.service_name}._netneighbor._tcp.local."
@@ -665,77 +601,51 @@ class MainWindow(QMainWindow):
 
         current_service_names = set(self.online_devices_data.keys())
         new_service_names = set(new_online_data.keys())
-
-        # 更新数据模型
         self.online_devices_data = new_online_data
         self.status_bar_label.setText(f"发现 {len(self.online_devices_data)} 个在线设备。")
 
-        # 计算差异
         to_add = new_service_names - current_service_names
         to_remove = current_service_names - new_service_names
 
-        # 从UI中移除下线的设备
-        items_to_remove = []
-        for i in range(self.device_list_widget.count()):
+        for i in range(self.device_list_widget.count() - 1, -1, -1):
             item = self.device_list_widget.item(i)
-            service_name = item.data(100)
-            if service_name in to_remove:
-                items_to_remove.append(item)
-                # 检查下线的是否是当前活动设备
-                if self.active_peer_client and self.active_peer_client.base_url.endswith(
-                        str(self.online_devices_data.get(service_name, {}).get('port', ''))):
-                    self.add_log_message(f"当前查看的设备 '{service_name.split('.')[0]}' 已下线。", "⚠️")
-                    self.clear_active_peer_view()
+            if item and item.data(100) in to_remove:
+                self.device_list_widget.takeItem(i)
 
-        for item in items_to_remove:
-            self.device_list_widget.takeItem(self.device_list_widget.row(item))
-
-        # 向UI中添加新上线的设备
         for service_name in sorted(list(to_add)):
             data = self.online_devices_data[service_name]
             display_name = service_name.split('._netneighbor._tcp.local.')[0]
-
-            # 【核心代码】从设备属性中获取 dev_type，如果没有则显示“未知设备”
             dev_type = data.get("properties", {}).get("dev_type", "未知设备")
-
-            list_item = QListWidgetItem()
-            # 【美观性】使用换行符将设备名和类型分开显示，更清晰
-            list_item.setText(f"{display_name}  类型：{dev_type}")
+            list_item = QListWidgetItem(f"{display_name}  类型：{dev_type}")
             list_item.setIcon(self.style().standardIcon(QStyle.SP_DriveNetIcon))
             list_item.setData(100, service_name)
             self.device_list_widget.addItem(list_item)
+
     def clear_active_peer_view(self):
         self.active_peer_client = None
         if self.ws_remote_thread and self.ws_remote_thread.isRunning():
             self.ws_remote_thread.stop()
         self.ws_remote_thread = None
-
         self.share_selector_combo.clear()
         self.share_selector_combo.setEnabled(False)
         self.file_table_widget.setRowCount(0)
         self.upload_button.setEnabled(False)
         self.back_button.setEnabled(False)
-
         self.right_stack.setCurrentWidget(self.welcome_page)
-
         self.status_bar_label.setText("就绪")
 
     def handle_device_click(self, clicked_item: QListWidgetItem, force_refresh: bool = False):
         if clicked_item is None: return
-
         service_name = clicked_item.data(100)
         device_data = self.online_devices_data.get(service_name)
-
         if not device_data: return
 
         self.right_stack.setCurrentWidget(self.file_browser_page)
-
         new_base_url = f"http://{device_data['address']}:{device_data['port']}"
-        if not force_refresh and self.active_peer_client and self.active_peer_client.base_url == new_base_url:
-            return
 
+        # --- 【核心修复】确保旧线程被可靠地停止和清理 ---
         if self.ws_remote_thread and self.ws_remote_thread.isRunning():
-            self.ws_remote_thread.stop()
+            self.ws_remote_thread.stop()  # 调用新的、健壮的 stop 方法
 
         ws_remote_uri = f"ws://{device_data['address']}:{device_data['port']}/ws/events"
         self.ws_remote_thread = WebSocketClientThread(ws_remote_uri, 'remote')
@@ -743,31 +653,23 @@ class MainWindow(QMainWindow):
         self.ws_remote_thread.start()
 
         self.active_path_stack = []
-        if not force_refresh or not self.active_peer_client:
-            self.active_peer_client = ApiClient(new_base_url)
-        elif self.active_peer_client.base_url != new_base_url:
-            self.active_peer_client = ApiClient(new_base_url)
-
+        self.active_peer_client = ApiClient(new_base_url)
         self.add_log_message(f"已连接到设备: {clicked_item.text().splitlines()[0]}", "🔌")
-        self.measure_ping(self.active_peer_client, clicked_item.text().splitlines()[0])
+        self.measure_ping(self.active_peer_client, service_name.split('.')[0])
 
         self.share_selector_combo.blockSignals(True)
         self.share_selector_combo.clear()
-
         shares = self.active_peer_client.get_shares()
         if shares:
-            share_names = [s['name'] for s in shares]
-            self.share_selector_combo.addItems(share_names)
+            self.share_selector_combo.addItems([s['name'] for s in shares])
             self.share_selector_combo.setEnabled(True)
             self.upload_button.setEnabled(True)
-            self.current_path_label.setText("请选择一个共享")
         else:
-            self.current_path_label.setText("对方无共享或获取失败")
             self.share_selector_combo.setEnabled(False)
             self.upload_button.setEnabled(False)
             self.update_file_table(None)
-
         self.share_selector_combo.blockSignals(False)
+
         if self.share_selector_combo.count() > 0:
             self.handle_share_selection_change(0)
 
@@ -791,30 +693,22 @@ class MainWindow(QMainWindow):
 
     def update_file_table(self, files: Optional[list]):
         self.file_table_widget.setRowCount(0)
-        if files is None:
-            return
+        if files is None: return
 
+        files.sort(key=lambda x: (not x['is_dir'], x['name'].lower()))
         self.file_table_widget.setRowCount(len(files))
-        files.sort(key=lambda x: (not x['is_dir'], x['name']))
 
         for row, file_info in enumerate(files):
             name_item = QTableWidgetItem(file_info['name'])
-            name_item.setFlags(name_item.flags() | Qt.ItemIsEnabled)
+            name_item.setFlags(name_item.flags() & ~Qt.ItemIsEditable)
+            name_item.setIcon(self.folder_icon if file_info['is_dir'] else self.file_icon)
 
-            if file_info['is_dir']:
-                type_item = QTableWidgetItem("文件夹")
-                name_item.setIcon(self.folder_icon)
-                size_item = QTableWidgetItem("")
-            else:
-                type_item = QTableWidgetItem("文件")
-                name_item.setIcon(self.file_icon)
-                size_item = QTableWidgetItem(self.format_size(file_info['size']))
+            type_item = QTableWidgetItem("文件夹" if file_info['is_dir'] else "文件")
+            type_item.setFlags(type_item.flags() & ~Qt.ItemIsEditable)
 
-            type_item.setFlags(type_item.flags() | Qt.ItemIsEnabled)
-
+            size_item = QTableWidgetItem(self.format_size(file_info['size']))
+            size_item.setFlags(size_item.flags() & ~Qt.ItemIsEditable)
             size_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            size_item.setData(Qt.UserRole, file_info['size'])
-            size_item.setFlags(size_item.flags() | Qt.ItemIsEnabled)
 
             self.file_table_widget.setItem(row, 0, name_item)
             self.file_table_widget.setItem(row, 1, type_item)
@@ -830,13 +724,14 @@ class MainWindow(QMainWindow):
             else:
                 self.worker_thread.terminate()
 
-        self.add_log_message("应用正在关闭...", "👋")
+        print("应用正在关闭，开始清理线程...")
 
+        # --- 【核心修复】在关闭时也使用可靠的停止方法 ---
         if self.ws_local_thread: self.ws_local_thread.stop()
         if self.ws_remote_thread: self.ws_remote_thread.stop()
 
         self.controller.stop_all_services()
-
+        print("所有服务和线程已请求停止。应用退出。")
         event.accept()
 
     def update_my_shares_list(self):
@@ -850,7 +745,7 @@ class MainWindow(QMainWindow):
 
         for share in shares:
             name = share.get('name', '未命名共享')
-            permissions = "可读/写" if "write" in share.get("permissions", []) else "只读"
+            permissions = "可读/写" if "upload" in share.get("permissions", []) else "只读"
             item = QListWidgetItem(f"{name} ({permissions})")
             item.setToolTip(share.get('path'))
             item.setIcon(self.folder_icon)

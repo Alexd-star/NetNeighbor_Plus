@@ -1,14 +1,18 @@
 [[shares]]
 name = "My Documents"
 path = "D:/test_file/documents"
-permissions = [ "read", "write",]
+permissions = [ "download", "upload", "read", "write",]
 
 [[shares]]
 name = "Photos Read-Only"
 path = "D:/test_file/documents/photos"
-permissions = [ "read",]
+permissions = [ "download", "upload", "read",]
+
+[[shares]]
+name = "竞赛活动"
+path = "D:\\Aria 学习\\研究生\\竞赛活动"
+permissions = [ "read", "download", "upload",]
 
 [service]
-# 将 "MyAwesomePC" 改为 "auto" 或留空，以启用设备名动态检测
-name = "auto"
+name = "ASUS-FX503vd"
 port = 8080

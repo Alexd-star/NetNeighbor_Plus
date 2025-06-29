@@ -8,6 +8,7 @@ import platform
 import getpass
 import json
 import asyncio
+import copy
 from PySide6.QtCore import QObject, Signal
 from core.config_loader import get_config,load_config, get_shares
 from core.discovery import DiscoveryService
@@ -44,21 +45,26 @@ class AppController(QObject):
 
     def __init__(self, port_override=None, parent=None):
         super().__init__(parent)
-        # 【修复】加载原始配置，而不是使用可能被修改的全局单例
-        self.running_config = load_config()
+        # --- 【核心修复】使用配置的深拷贝，确保每个实例的配置是独立的 ---
+        self.running_config = copy.deepcopy(get_config())
+
         self.port_override = port_override
-        self.port = port_override or self.running_config.get("service", {}).get("port", 8080)
+
+        # 现在可以安全地修改实例的配置，不会影响全局配置或其他实例
+        # 只有在 port_override 有值时，才用它覆盖配置中的端口
+        if self.port_override:
+            self.port = self.port_override
+            self.running_config['service']['port'] = self.port
+        else:
+            self.port = self.running_config.get("service", {}).get("port", 8080)
+
         self.tcp_port = self.port + 1
 
-        # 【修复】初始化时，只使用配置文件中的原始名字作为临时名字。
-        # 不再拼接端口号，避免污染配置。
-        # 最终的、正确的设备名将在 start_all_services 中确定。
+        # 初始化时使用基础名字，最终名字在 start_all_services 中确定
         self.device_name = self.running_config.get("service", {}).get("name", "auto")
         self.service_name = self.device_name
 
         self.device_properties = {}
-
-        self.running_config['service']['port'] = self.port
 
         self.stop_event = threading.Event()
         self.watcher_stop_event = threading.Event()
