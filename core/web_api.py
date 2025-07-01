@@ -138,7 +138,8 @@ def iter_folder_as_zip(folder_path: str) -> Generator[bytes, None, None]:
 @app.get("/api/v1/download_folder/{share_name}")
 def download_folder(share_name: str, folder_path: str):
     """
-    以最稳定的方式流式下载文件夹 (支持进度条并能智能降级)。
+    【第二步优化】以最高效的方式流式下载文件夹。
+    此版本移除了预计算大小的步骤，以实现最快的响应速度。
     """
     absolute_path, target_share = get_safe_path_and_share(share_name, folder_path)
 
@@ -147,39 +148,19 @@ def download_folder(share_name: str, folder_path: str):
     if not os.path.isdir(absolute_path):
         raise HTTPException(status_code=404, detail="Folder not found.")
 
-    # --- 1. “无害”的预计算过程 ---
-    total_size = None
-    try:
-        # 创建一个临时的、仅用于计算的实例
-        size_calculator_stream = ZipStream(compress_type=ZIP_STORED)
-
-        # 模拟添加文件以计算大小
-        for root, _, files in os.walk(absolute_path):
-            for file in files:
-                disk_path = os.path.join(root, file)
-                archive_path = os.path.relpath(disk_path, absolute_path)
-                size_calculator_stream.add(disk_path, arcname=archive_path)
-
-        # 获取计算出的总大小
-        total_size = size_calculator_stream.size
-        print(f"预计算大小成功: {total_size} bytes")
-
-    except Exception as e:
-        # 如果计算过程中任何一个文件出问题，则放弃计算，并降级
-        print(f"警告: 无法预计算文件夹大小，将降级为不确定进度条。原因: {e}")
-        total_size = None
-
-    # --- 预计算过程结束 ---
-
-    # 2. 定义一个与您原始代码逻辑完全一致的、绝对可靠的生成器
+    # 1. 直接定义流式ZIP生成器
     def robust_zip_generator():
-        # 在生成器内部创建全新的实例，与计算过程完全隔离
+        # 在生成器内部创建全新的实例
         streamer = ZipStream(compress_type=ZIP_STORED)
 
         for root, _, files in os.walk(absolute_path):
             for file in files:
                 try:
                     disk_path = os.path.join(root, file)
+                    if not os.access(disk_path, os.R_OK):
+                        print(f"警告: 文件不可读，已跳过: {disk_path}")
+                        continue
+
                     archive_path = os.path.relpath(disk_path, absolute_path)
                     streamer.add(disk_path, arcname=archive_path)
                 except Exception as file_error:
@@ -187,13 +168,12 @@ def download_folder(share_name: str, folder_path: str):
                     print(f"警告: 流式传输时跳过文件 '{disk_path}'，原因: {file_error}")
                     continue
 
-        # 迭代这个全新的实例，产出数据
+        # 迭代实例，产出数据
         for chunk in streamer:
             yield chunk
 
-    # 3. 构建安全的响应头
+    # 2. 构建安全的响应头 (不再包含 Content-Length)
     folder_name = os.path.basename(os.path.normpath(absolute_path))
-
     encoded_filename = urllib.parse.quote(folder_name, safe='')
     ascii_fallback_filename = folder_name.encode('ascii', 'ignore').decode('ascii')
     if not ascii_fallback_filename:
@@ -203,12 +183,9 @@ def download_folder(share_name: str, folder_path: str):
         f"attachment; filename=\"{ascii_fallback_filename}.zip\"; "
         f"filename*=UTF-8''{encoded_filename}.zip"
     )
-
     response_headers = {'Content-Disposition': content_disposition}
-    if total_size is not None:
-        response_headers['Content-Length'] = str(total_size)
 
-    # 4. 返回最终的流式响应
+    # 3. 返回最终的流式响应
     return StreamingResponse(
         content=robust_zip_generator(),
         media_type="application/zip",
