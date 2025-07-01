@@ -1,5 +1,5 @@
 # 文件: gui/api_client.py
-# (已修改 UploadStreamer 以支持速度计算)
+# (最终版: 为所有元数据请求强制添加了显式超时)
 
 import os
 import httpx
@@ -9,14 +9,11 @@ from typing import Optional, Callable, Union
 class UploadStreamer:
     """
     一个可流式读取文件并提供进度的类。
-
-    【修改】现在它接受一个回调函数, 该函数在每次读取块后被调用。
     """
 
     def __init__(
             self,
             file_path: str,
-            # 回调函数接收一个参数: 读取的字节数
             progress_callback: Optional[Callable[[int], None]] = None,
             chunk_size: int = 4096
     ):
@@ -29,7 +26,6 @@ class UploadStreamer:
     def read(self, size: int = -1) -> bytes:
         chunk = self.file.read(self.chunk_size)
         if self.progress_callback:
-            # 调用回调, 传递读取到的块的长度
             self.progress_callback(len(chunk))
         return chunk
 
@@ -48,12 +44,16 @@ class ApiClient:
 
     def __init__(self, base_url: str):
         self.base_url = base_url
-        self.client = httpx.Client(timeout=30.0)
+        # 设置一个全局默认超时，作为后备
+        self.client = httpx.Client(timeout=5.0)
 
-    # ... 其他 ApiClient 方法保持不变 ...
     def notify_shares_changed(self):
         try:
-            response = self.client.post(f"{self.base_url}/api/v1/internal/notify_shares_changed")
+            # 内部调用，也设置一个短超时
+            response = self.client.post(
+                f"{self.base_url}/api/v1/internal/notify_shares_changed",
+                timeout=5.0
+            )
             response.raise_for_status()
             return True
         except (httpx.RequestError, httpx.HTTPStatusError) as e:
@@ -62,6 +62,7 @@ class ApiClient:
 
     def get_ping(self) -> bool:
         try:
+            # 保持原有的快速ping超时
             response = self.client.get(f"{self.base_url}/api/v1/ping", timeout=2.0)
             return response.status_code == 200
         except (httpx.RequestError, httpx.HTTPStatusError):
@@ -69,7 +70,8 @@ class ApiClient:
 
     def get_peers(self) -> Optional[dict]:
         try:
-            response = self.client.get(f"{self.base_url}/api/v1/peers")
+            # 获取本机设备列表，也应快速完成
+            response = self.client.get(f"{self.base_url}/api/v1/peers", timeout=5.0)
             response.raise_for_status()
             return response.json()
         except (httpx.RequestError, httpx.HTTPStatusError) as e:
@@ -77,19 +79,22 @@ class ApiClient:
             return None
 
     def get_shares(self) -> Optional[list]:
+        """获取共享列表，强制使用5秒超时。"""
         try:
-            response = self.client.get(f"{self.base_url}/api/v1/shares")
+            response = self.client.get(f"{self.base_url}/api/v1/shares", timeout=5.0)
             response.raise_for_status()
             return response.json()
         except (httpx.RequestError, httpx.HTTPStatusError) as e:
+            # 这个异常现在应该在5秒后被触发
             print(f"错误: 请求共享列表失败 - {e}")
             return None
 
     def get_files(self, share_name: str, path: str = "/") -> Optional[list]:
+        """获取文件列表，同样强制添加5秒超时。"""
         try:
             params = {"path": path}
             url = f"{self.base_url}/api/v1/files/{share_name}"
-            response = self.client.get(url, params=params)
+            response = self.client.get(url, params=params, timeout=5.0)
             response.raise_for_status()
             return response.json()
         except (httpx.RequestError, httpx.HTTPStatusError) as e:
@@ -99,26 +104,28 @@ class ApiClient:
     def download_file_stream(self, share_name: str, file_path: str):
         url = f"{self.base_url}/api/v1/download/{share_name}"
         params = {"file_path": file_path}
+        # timeout=None 禁用此特定请求的超时，允许大文件下载
         return self.client.stream("GET", url, params=params, timeout=None)
 
     def download_folder_stream(self, share_name: str, folder_path: str):
-        """请求后端的 /api/v1/download_folder 端点。"""
         url = f"{self.base_url}/api/v1/download_folder/{share_name}"
         params = {"folder_path": folder_path}
+        # timeout=None 禁用此特定请求的超时，允许大文件夹下载
         return self.client.stream("GET", url, params=params, timeout=None)
 
     def upload_file_stream(self, share_name: str, dest_path: str, uploader: UploadStreamer):
         url = f"{self.base_url}/api/v1/upload/{share_name}"
         params = {"dest_path": dest_path}
         files = {'file': (os.path.basename(uploader.file_path), uploader, 'application/octet-stream')}
+        # timeout=None 禁用此特定请求的超时，允许大文件上传
         response = self.client.post(url, params=params, files=files, timeout=None)
         response.raise_for_status()
         return response.json()
 
     def create_directory(self, share_name: str, path: str):
-        """请求后端的 /api/v1/create_dir 端点。"""
         url = f"{self.base_url}/api/v1/create_dir/{share_name}"
         params = {"path": path}
-        response = self.client.post(url, params=params)
+        # 创建目录应很快，也设置超时
+        response = self.client.post(url, params=params, timeout=5.0)
         response.raise_for_status()
         return response.json()

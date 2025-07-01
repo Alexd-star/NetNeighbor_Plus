@@ -29,6 +29,33 @@ from .settings_window import SettingsWindow
 from core.config_loader import get_config, load_config, CONFIG_PATH
 
 
+class ConnectionThread(QThread):
+    """一个专门用于后台网络连接的QThread工作线程。"""
+    # 定义信号: 成功时发射客户端和共享列表，失败时发射错误信息
+    connection_successful = Signal(ApiClient, list)
+    connection_failed = Signal(str)
+
+    def __init__(self, base_url: str, parent=None):
+        super().__init__(parent)
+        self.base_url = base_url
+        self.api_client = ApiClient(self.base_url)
+
+    def run(self):
+        """线程的执行体：进行网络请求并根据结果发射信号。"""
+        try:
+            # 现在在这里执行真正的、会超时的网络操作
+            shares = self.api_client.get_shares()
+
+            if shares is not None:
+                # 成功，发射成功信号
+                self.connection_successful.emit(self.api_client, shares)
+            else:
+                # API返回None，说明是超时或连接错误
+                raise ConnectionError("无法获取共享列表，设备无响应或超时。")
+        except Exception as e:
+            # 任何其他异常，发射失败信号
+            self.connection_failed.emit(str(e))
+
 class WebSocketClientThread(QThread):
     """在后台线程中处理 WebSocket 连接, 并通过信号与主线程通信。"""
     message_received = Signal(str, str)
@@ -326,6 +353,10 @@ class WorkerThread(QThread):
 class MainWindow(QMainWindow):
     """应用主窗口类, 包含所有UI元素和交互逻辑。"""
 
+    def _on_connection_thread_finished(self):
+        """当连接线程结束后，安全地清除对它的引用。"""
+        self.connection_thread = None
+
     def __init__(self, controller: AppController):
         super().__init__()
         self.controller = controller
@@ -335,12 +366,15 @@ class MainWindow(QMainWindow):
         self.active_peer_client: Optional[ApiClient] = None
         self.active_path_stack: List[str] = []
         self.worker_thread: Optional[WorkerThread] = None
+        self.connection_thread: Optional[ConnectionThread] = None
         self.ws_local_thread: Optional[WebSocketClientThread] = None
         self.ws_remote_thread: Optional[WebSocketClientThread] = None
         self.progress_dialog: Optional[QProgressDialog] = None
 
         # --- 【优化4】增加一个变量来存储进度对话框的标签文本 ---
         self._progress_label_text = ""
+        # --- 【第一步优化 - 新增代码】: 新增一个用于设备列表更新防抖的计时器 ---
+        self.device_list_update_timer = QTimer(self)
 
         self._setup_window()
         self._load_icons()
@@ -721,10 +755,19 @@ class MainWindow(QMainWindow):
         self.add_log_message(f"已停止共享: {share_name_to_remove}", "️")
 
     def _setup_timers(self):
-        """设置用于轮询设备列表的定时器。"""
+        """【第一步优化 - 完整替换此函数】设置用于轮询和防抖的定时器。"""
+        # 1. 设置防抖计时器
+        self.device_list_update_timer.setSingleShot(True)  # 设置为单次触发
+        # 设置一个300毫秒的延迟，可以根据实际情况调整
+        self.device_list_update_timer.setInterval(300)
+        # 当计时器超时（即延迟结束后），调用真正的更新函数
+        self.device_list_update_timer.timeout.connect(self._perform_device_list_update)
+
+        # 2. 这个定时器保持不变，用于定期轮询，以防WebSocket消息丢失
         self.peer_update_timer = QTimer(self)
-        self.peer_update_timer.timeout.connect(self.update_device_list)
+        self.peer_update_timer.timeout.connect(self.update_device_list) # 它会触发防抖，而不是直接更新
         self.peer_update_timer.start(5000)
+
 
     def _setup_websocket(self):
         """初始化连接到本机的WebSocket客户端。"""
@@ -779,11 +822,13 @@ class MainWindow(QMainWindow):
                 else:
                     self.add_log_message(f"WebSocket ({source}) 已断开。", "🔌")
             elif source == 'local':
-                if event == "peer_online":
-                    self.add_log_message(f"设备上线: {data.get('name')}", "🟢")
-                    self.update_device_list()
-                elif event == "peer_offline":
-                    self.add_log_message(f"设备下线: {data.get('name')}", "🔴")
+                if event == "peer_online" or event == "peer_offline":
+                    # --- 【第一步优化 - 确认此处的调用】: 收到任何设备变动消息，都去触发防抖更新 ---
+                    device_name = data.get('name', '未知设备')
+                    log_icon = "🟢" if event == "peer_online" else "🔴"
+                    log_action = "上线" if event == "peer_online" else "下线"
+                    self.add_log_message(f"设备{log_action}: {device_name}", log_icon)
+                    # 这个调用现在只会启动计时器，不会阻塞UI
                     self.update_device_list()
             elif source == 'remote':
                 if event == "shares_updated":
@@ -962,8 +1007,22 @@ class MainWindow(QMainWindow):
         self.update_file_table(files)
 
     def update_device_list(self):
-        """定时更新在线设备列表。"""
-        if not self.api_client: return
+        """
+        触发对设备列表的防抖更新。
+        短时间内对此函数的多次调用将只导致一次实际的UI更新。
+        """
+        # 每次调用都重新启动（或启动）300毫秒的单次计时器
+        self.device_list_update_timer.start()
+
+    # --- 【第一步优化 - 新增代码】: 这是真正执行UI更新的函数 ---
+    def _perform_device_list_update(self):
+        """
+        此函数包含实际的、可能耗时的UI更新逻辑。
+        它由防抖计时器在延迟结束后安全地调用。
+        """
+        if not self.api_client:
+            return
+
         peers = self.api_client.get_peers()
         new_online_data = {}
         if peers:
@@ -974,6 +1033,7 @@ class MainWindow(QMainWindow):
         if not self.active_peer_client:
             self.status_bar_label.setText(f"发现 {count} 个在线设备。" if count > 0 else "就绪. 正在扫描局域网设备...")
 
+        # 检查已连接的设备是否下线
         if self.active_peer_client:
             current_peer_name = next((name for name, data in self.online_devices_data.items() if
                                       self.active_peer_client.base_url.startswith(
@@ -985,20 +1045,36 @@ class MainWindow(QMainWindow):
         current_names = set(self.online_devices_data.keys())
         new_names = set(new_online_data.keys())
         self.online_devices_data = new_online_data
-        to_add, to_remove = new_names - current_names, current_names - new_names
 
-        for i in range(self.device_list_widget.count() - 1, -1, -1):
-            item = self.device_list_widget.item(i)
-            if item and item.data(Qt.ItemDataRole.UserRole) in to_remove: self.device_list_widget.takeItem(i)
+        # 为了提高效率，只处理有变化的部分
+        to_add = new_names - current_names
+        to_remove = current_names - new_names
 
-        for name in sorted(list(to_add)):
-            data = self.online_devices_data[name]
-            display = name.split('._netneighbor._tcp.local.')[0]
-            dev_type = data.get("properties", {}).get("dev_type", "未知")
-            item = QListWidgetItem(f"{display}\n类型: {dev_type}")
-            item.setIcon(self.device_icon)
-            item.setData(Qt.ItemDataRole.UserRole, name)
-            self.device_list_widget.addItem(item)
+        # 优化：一次性处理UI更新，避免在循环中频繁操作
+        self.device_list_widget.setUpdatesEnabled(False)  # 暂停UI更新
+
+        try:
+            # 批量移除
+            items_to_remove = []
+            for i in range(self.device_list_widget.count()):
+                item = self.device_list_widget.item(i)
+                if item and item.data(Qt.ItemDataRole.UserRole) in to_remove:
+                    items_to_remove.append(item)
+
+            for item in items_to_remove:
+                self.device_list_widget.takeItem(self.device_list_widget.row(item))
+
+            # 批量添加
+            for name in sorted(list(to_add)):
+                data = self.online_devices_data[name]
+                display = name.split('._netneighbor._tcp.local.')[0]
+                dev_type = data.get("properties", {}).get("dev_type", "未知")
+                item = QListWidgetItem(f"{display}\n类型: {dev_type}")
+                item.setIcon(self.device_icon)
+                item.setData(Qt.ItemDataRole.UserRole, name)
+                self.device_list_widget.addItem(item)
+        finally:
+            self.device_list_widget.setUpdatesEnabled(True)  # 恢复UI更新并一次性应用所有更改
 
     def clear_active_peer_view(self):
         """当远程设备断开时，清空右侧视图。"""
@@ -1013,41 +1089,101 @@ class MainWindow(QMainWindow):
         self.right_stack.setCurrentWidget(self.welcome_page)
 
     def handle_device_click(self, clicked_item: QListWidgetItem, force_refresh: bool = False):
-        """处理对设备列表的点击事件。"""
-        if not clicked_item: return
+        """【最终修复版】使用健壮的线程生命周期管理。"""
+        if not clicked_item:
+            return
+
+        # 检查是否有线程正在运行，现在这个检查是安全的了
+        if self.connection_thread and self.connection_thread.isRunning():
+            return
+
         service_name = clicked_item.data(Qt.ItemDataRole.UserRole)
         device_data = self.online_devices_data.get(service_name)
-        if not device_data: return
-        self.right_stack.setCurrentWidget(self.file_browser_page)
+        if not device_data:
+            return
+
         new_base_url = f"http://{device_data['address']}:{device_data['port']}"
+        display_name = service_name.split('._netneighbor._tcp.local.')[0]
 
-        is_new_device = not self.active_peer_client or self.active_peer_client.base_url != new_base_url
+        if not force_refresh and self.active_peer_client and self.active_peer_client.base_url == new_base_url:
+            self.right_stack.setCurrentWidget(self.file_browser_page)
+            return
 
-        if force_refresh or is_new_device:
-            self.active_peer_client = ApiClient(new_base_url)
-            if is_new_device:
-                self.add_log_message(f"已连接到设备: {service_name.split('.')[0]}", "🔌")
-                self.measure_ping(self.active_peer_client, service_name.split('.')[0])
-                if self.ws_remote_thread and self.ws_remote_thread.isRunning(): self.ws_remote_thread.stop()
-                ws_uri = f"ws://{device_data['address']}:{device_data['port']}/ws/events"
-                self.ws_remote_thread = WebSocketClientThread(ws_uri, 'remote')
-                self.ws_remote_thread.message_received.connect(self.handle_websocket_message)
-                self.ws_remote_thread.start()
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        self.status_bar_label.setText(f"正在连接到 {display_name}...")
+        self.add_log_message(f"正在尝试连接到 {display_name}...", "⏳")
+        self.right_stack.setCurrentWidget(self.welcome_page)
 
-            current_share = self.share_selector_combo.currentText()
-            self.share_selector_combo.blockSignals(True)
-            self.share_selector_combo.clear()
-            shares = self.active_peer_client.get_shares()
-            share_names = [s['name'] for s in shares] if shares else []
-            if share_names: self.share_selector_combo.addItems(share_names)
+        self.connection_thread = ConnectionThread(new_base_url)
+        self.connection_thread.connection_successful.connect(
+            lambda client, shares: self._on_connection_successful(client, shares, display_name)
+        )
+        self.connection_thread.connection_failed.connect(
+            lambda error_msg: self._on_connection_failed(error_msg, display_name)
+        )
 
-            if current_share and current_share in share_names and not is_new_device:
-                self.share_selector_combo.setCurrentText(current_share)
+        # --- 【最终修复-第3步】: 修改这里的信号连接 ---
+        # 1. 线程结束后，先调用我们的清理函数
+        self.connection_thread.finished.connect(self._on_connection_thread_finished)
+        # 2. 然后再安全地调度删除
+        self.connection_thread.finished.connect(self.connection_thread.deleteLater)
 
-            self.share_selector_combo.blockSignals(False)
+        self.connection_thread.start()
 
-            if is_new_device or self.share_selector_combo.currentText() != current_share:
-                self.handle_share_selection_change(self.share_selector_combo.currentIndex())
+    def _connect_to_device_background(self, base_url: str, display_name: str):
+        """
+        【诊断版本】在后台线程中执行诊断，用 time.sleep 模拟网络延迟。
+        """
+        try:
+            # 这条打印信息会出现在您的控制台（命令行窗口）
+            print(f"[{time.strftime('%H:%M:%S')}] 后台线程启动，即将休眠5秒以模拟网络延迟...")
+
+            # --- 诊断代码: 我们用一个无害的休眠来替换掉真正的网络请求 ---
+            time.sleep(5)
+
+            # 我们直接模拟一个失败的场景，以便测试流程
+            raise ConnectionError("这是一个模拟的超时错误，用于测试。")
+
+        except Exception as e:
+            # 这条打印信息也会出现在控制台
+            print(f"[{time.strftime('%H:%M:%S')}] 后台线程休眠结束，准备在主线程中报告错误...")
+
+            # 使用QTimer在主线程安全地更新UI
+            QTimer.singleShot(0, lambda: self._on_connection_failed(str(e), display_name))
+
+    def _on_connection_successful(self, client: ApiClient, shares: list, display_name: str):
+        """【最终修复版】连接成功后的UI更新槽函数。"""
+        QApplication.restoreOverrideCursor()
+        self.add_log_message(f"已连接到设备: {display_name}", "🔌")
+        self.status_bar_label.setText(f"已连接到 {display_name}")
+        self.right_stack.setCurrentWidget(self.file_browser_page)
+
+        self.active_peer_client = client
+
+        if self.ws_remote_thread and self.ws_remote_thread.isRunning():
+            self.ws_remote_thread.stop()
+
+        ws_uri = f"ws://{client.base_url.split('//')[1]}/ws/events"
+        self.ws_remote_thread = WebSocketClientThread(ws_uri, 'remote')
+        self.ws_remote_thread.message_received.connect(self.handle_websocket_message)
+        self.ws_remote_thread.start()
+
+        self.share_selector_combo.blockSignals(True)
+        self.share_selector_combo.clear()
+        share_names = [s['name'] for s in shares] if shares else []
+        if share_names:
+            self.share_selector_combo.addItems(share_names)
+        self.share_selector_combo.blockSignals(False)
+
+        self.handle_share_selection_change(self.share_selector_combo.currentIndex())
+        self.measure_ping(client, display_name)
+
+    def _on_connection_failed(self, error_message: str, display_name: str):
+        """【最终修复版】连接失败后的UI更新槽函数。"""
+        QApplication.restoreOverrideCursor()
+        friendly_error = f"连接到 {display_name} 失败"
+        self.add_log_message(f"{friendly_error}: {error_message}", "❌")
+        self.status_bar_label.setText(friendly_error)
 
     def handle_share_selection_change(self, index: int):
         """处理共享文件夹下拉框的选择变化。"""
