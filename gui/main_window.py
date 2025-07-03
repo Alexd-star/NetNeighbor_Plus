@@ -1258,12 +1258,20 @@ class MainWindow(QMainWindow):
     def update_my_shares_list(self):
         """从配置文件加载并更新本机共享列表。"""
         self.my_shares_list_widget.clear()
+        # 从新的、智能的config_loader加载配置
         shares = load_config(force_reload=True).get("shares", [])
+
         if not shares:
-            item = QListWidgetItem("无共享文件夹")
+            # --- 【核心改进】: 为新用户提供清晰的引导 ---
+            item = QListWidgetItem("👉 请点击右侧“设置”按钮\n    添加您的第一个共享文件夹")
             item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+            font = item.font()
+            font.setItalic(True)
+            item.setFont(font)
+            item.setForeground(Qt.gray)
             self.my_shares_list_widget.addItem(item)
             return
+
         for share in shares:
             name = share.get('name', '未命名')
             permissions = share.get("permissions", [])
