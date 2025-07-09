@@ -6,6 +6,7 @@ import asyncio
 import json
 import math
 import os
+import re
 import socket
 import threading
 import time
@@ -28,6 +29,15 @@ from .app_controller import AppController
 from .settings_window import SettingsWindow
 from core.config_loader import get_config, load_config, CONFIG_PATH
 
+
+def natural_sort_key(s: str) -> list:
+    """
+    为字符串生成一个可用于自然排序的键。
+    例如，'v10' 会被转换为 ['v', 10]，'v2' 会被转换为 ['v', 2]。
+    这样在比较时，10 会被正确地识别为大于 2。
+    """
+    return [int(text) if text.isdigit() else text.lower()
+            for text in re.split(r'([0-9]+)', s)]
 
 class ConnectionThread(QThread):
     """一个专门用于后台网络连接的QThread工作线程。"""
@@ -391,7 +401,15 @@ class MainWindow(QMainWindow):
         # --- 【优化4】增加一个变量来存储进度对话框的标签文本 ---
         self._progress_label_text = ""
         # --- 【第一步优化 - 新增代码】: 新增一个用于设备列表更新防抖的计时器 ---
-        self.device_list_update_timer = QTimer(self)
+        # 1. 创建用于缓冲设备更新事件的队列
+        self.device_add_queue = []
+        self.device_remove_queue = []
+
+        # 2. 创建一个单次触发的定时器，用于批处理UI更新
+        self.ui_update_timer = QTimer(self)
+        self.ui_update_timer.setSingleShot(True)
+        self.ui_update_timer.setInterval(150)
+        self.ui_update_timer.timeout.connect(self._process_device_list_updates)
 
         self._setup_window()
         self._load_icons()
@@ -485,12 +503,12 @@ class MainWindow(QMainWindow):
     def post_init_setup(self):
         """在后台服务启动后进行网络相关的初始化。"""
         self.add_log_message("后端服务已就绪, UI开始进行网络初始化...")
-        base_url = f"http://{self.my_ip}:{self.controller.port}"
+        base_url = f"http://{self._get_my_ip()}:{self.controller.port}"
         self.api_client = ApiClient(base_url)
-        self._setup_timers()
         self._setup_websocket()
         self.update_local_status_display()
-        self.update_device_list()
+        # 【核心改动】: 转而调用新的方法，在启动时拉取一次全量设备列表。
+        self.populate_initial_devices()
 
     def _get_my_ip(self) -> str:
         """获取本机的局域网IP地址。"""
@@ -764,20 +782,6 @@ class MainWindow(QMainWindow):
         if self.api_client: self.api_client.notify_shares_changed()
         self.add_log_message(f"已停止共享: {share_name_to_remove}", "️")
 
-    def _setup_timers(self):
-        """【第一步优化 - 完整替换此函数】设置用于轮询和防抖的定时器。"""
-        # 1. 设置防抖计时器
-        self.device_list_update_timer.setSingleShot(True)  # 设置为单次触发
-        # 设置一个300毫秒的延迟，可以根据实际情况调整
-        self.device_list_update_timer.setInterval(300)
-        # 当计时器超时（即延迟结束后），调用真正的更新函数
-        self.device_list_update_timer.timeout.connect(self._perform_device_list_update)
-
-        # 2. 这个定时器保持不变，用于定期轮询，以防WebSocket消息丢失
-        self.peer_update_timer = QTimer(self)
-        self.peer_update_timer.timeout.connect(self.update_device_list) # 它会触发防抖，而不是直接更新
-        self.peer_update_timer.start(5000)
-
 
     def _setup_websocket(self):
         """初始化连接到本机的WebSocket客户端。"""
@@ -826,35 +830,29 @@ class MainWindow(QMainWindow):
         try:
             data = json.loads(message)
             event = data.get("event")
-            if event and event.startswith("ws_"):
-                if "connected" in event:
-                    self.add_log_message(f"WebSocket ({source}) 已连接。", "🔗")
-                else:
-                    self.add_log_message(f"WebSocket ({source}) 已断开。", "🔌")
-            elif source == 'local':
-                if event == "peer_online" or event == "peer_offline":
-                    # --- 【第一步优化 - 确认此处的调用】: 收到任何设备变动消息，都去触发防抖更新 ---
-                    device_name = data.get('name', '未知设备')
-                    log_icon = "🟢" if event == "peer_online" else "🔴"
-                    log_action = "上线" if event == "peer_online" else "下线"
-                    self.add_log_message(f"设备{log_action}: {device_name}", log_icon)
-                    # 这个调用现在只会启动计时器，不会阻塞UI
-                    self.update_device_list()
-            elif source == 'remote':
-                if event == "shares_updated":
-                    self.add_log_message(f"设备 {data.get('device_name')} 共享已更新。", "🔄")
-                    if self.device_list_widget.currentItem() and self.active_peer_client:
-                        self.handle_device_click(self.device_list_widget.currentItem(), force_refresh=True)
-                elif event == "refresh_files":
-                    # 如果一个传输任务正在进行，就忽略这个刷新请求
-                    if self.is_transfer_active:
-                        return
 
-                    # 只有在空闲时才执行刷新
-                    self.add_log_message("远程文件变更，延时刷新...", "🔄")
-                    QTimer.singleShot(500, self.refresh_current_file_view)
-        except json.JSONDecodeError:
-            pass
+            # 直接根据事件类型调用相应的UI更新方法
+            if event == "peer_online":
+                self.add_log_message(f"设备上线: {data.get('friendly_name')}", "🟢")
+                self.device_add_queue.append((data['name'], data['data']))
+                self.ui_update_timer.start()
+            elif event == "peer_offline":
+                self.add_log_message(f"设备下线: {data.get('friendly_name')}", "🔴")
+                self.device_remove_queue.append(data['name'])
+                self.ui_update_timer.start()
+
+            # 其余事件处理保持不变
+            elif event == "refresh_files" and self.active_peer_client:
+                if self.is_transfer_active:
+                    return
+                self.add_log_message("远程文件变更，延时刷新...", "🔄")
+                QTimer.singleShot(500, self.refresh_current_file_view)
+            elif event == "shares_updated" and source == 'remote':
+                self.add_log_message(f"设备 {data.get('device_name')} 共享已更新。", "🔄")
+                if self.device_list_widget.currentItem():
+                    self.handle_device_click(self.device_list_widget.currentItem(), force_refresh=True)
+        except (json.JSONDecodeError, KeyError, AttributeError) as e:
+            print(f"处理WebSocket消息时出错: {e}")
 
     def show_file_context_menu(self, pos):
         """显示文件列表的右键菜单。"""
@@ -1036,75 +1034,6 @@ class MainWindow(QMainWindow):
         files = self.active_peer_client.get_files(self.share_selector_combo.currentText(), current_path)
         self.update_file_table(files)
 
-    def update_device_list(self):
-        """
-        触发对设备列表的防抖更新。
-        短时间内对此函数的多次调用将只导致一次实际的UI更新。
-        """
-        # 每次调用都重新启动（或启动）300毫秒的单次计时器
-        self.device_list_update_timer.start()
-
-    # --- 【第一步优化 - 新增代码】: 这是真正执行UI更新的函数 ---
-    def _perform_device_list_update(self):
-        """
-        此函数包含实际的、可能耗时的UI更新逻辑。
-        它由防抖计时器在延迟结束后安全地调用。
-        """
-        if not self.api_client:
-            return
-
-        peers = self.api_client.get_peers()
-        new_online_data = {}
-        if peers:
-            my_name = f"{self.controller.service_name}._netneighbor._tcp.local."
-            new_online_data = {n: d for n, d in peers.items() if n != my_name}
-
-        count = len(new_online_data)
-        if not self.active_peer_client:
-            self.status_bar_label.setText(f"发现 {count} 个在线设备。" if count > 0 else "就绪. 正在扫描局域网设备...")
-
-        # 检查已连接的设备是否下线
-        if self.active_peer_client:
-            current_peer_name = next((name for name, data in self.online_devices_data.items() if
-                                      self.active_peer_client.base_url.startswith(
-                                          f"http://{data['address']}:{data['port']}")), None)
-            if current_peer_name and current_peer_name not in new_online_data:
-                self.add_log_message(f"已连接的设备 {current_peer_name.split('.')[0]} 已下线。", "🔌")
-                self.clear_active_peer_view()
-
-        current_names = set(self.online_devices_data.keys())
-        new_names = set(new_online_data.keys())
-        self.online_devices_data = new_online_data
-
-        # 为了提高效率，只处理有变化的部分
-        to_add = new_names - current_names
-        to_remove = current_names - new_names
-
-        # 优化：一次性处理UI更新，避免在循环中频繁操作
-        self.device_list_widget.setUpdatesEnabled(False)  # 暂停UI更新
-
-        try:
-            # 批量移除
-            items_to_remove = []
-            for i in range(self.device_list_widget.count()):
-                item = self.device_list_widget.item(i)
-                if item and item.data(Qt.ItemDataRole.UserRole) in to_remove:
-                    items_to_remove.append(item)
-
-            for item in items_to_remove:
-                self.device_list_widget.takeItem(self.device_list_widget.row(item))
-
-            # 批量添加
-            for name in sorted(list(to_add)):
-                data = self.online_devices_data[name]
-                display = name.split('._netneighbor._tcp.local.')[0]
-                dev_type = data.get("properties", {}).get("dev_type", "未知")
-                item = QListWidgetItem(f"{display}\n类型: {dev_type}")
-                item.setIcon(self.device_icon)
-                item.setData(Qt.ItemDataRole.UserRole, name)
-                self.device_list_widget.addItem(item)
-        finally:
-            self.device_list_widget.setUpdatesEnabled(True)  # 恢复UI更新并一次性应用所有更改
 
     def clear_active_peer_view(self):
         """当远程设备断开时，清空右侧视图。"""
@@ -1284,6 +1213,121 @@ class MainWindow(QMainWindow):
         self.controller.stop_all_services()
         self.add_log_message("所有服务和线程已停止。应用退出。", "👋")
         event.accept()
+
+    def _add_device_to_list(self, service_name: str, device_data: dict):
+        """向UI列表和内部数据结构中添加一个设备。"""
+        if service_name in self.online_devices_data:
+            return
+
+        self.online_devices_data[service_name] = device_data
+
+        display_name = service_name.split('._netneighbor._tcp.local.')[0]
+        dev_type = device_data.get("properties", {}).get("dev_type", "未知")
+
+        item = QListWidgetItem(f"{display_name}\n类型: {dev_type}")
+        item.setIcon(self.device_icon)
+        item.setData(Qt.ItemDataRole.UserRole, service_name)
+
+        # 1. 获取新项目的自然排序键
+        new_item_key = natural_sort_key(display_name)
+
+        # 2. 遍历现有列表，找到第一个比新项目“大”的位置
+        insert_row = 0
+        for i in range(self.device_list_widget.count()):
+            existing_item = self.device_list_widget.item(i)
+            # 列表项的文本是多行的，我们只取第一行（设备名）进行比较
+            existing_display_name = existing_item.text().split('\n')[0]
+            existing_item_key = natural_sort_key(existing_display_name)
+
+            if new_item_key < existing_item_key:
+                break  # 找到了插入位置，跳出循环
+            insert_row += 1
+
+        # 3. 在找到的正确位置插入新项目
+        self.device_list_widget.insertItem(insert_row, item)
+        self._update_status_bar_device_count()
+
+    def _remove_device_from_list(self, service_name: str):
+        """从UI列表和内部数据结构中移除一个设备。"""
+        if service_name not in self.online_devices_data:
+            return
+
+        # 检查是否断开了当前连接的设备
+        if self.active_peer_client:
+            device_data = self.online_devices_data.get(service_name)
+            if device_data:
+                active_url_part = self.active_peer_client.base_url.split('//')[1]
+                device_url_part = f"{device_data['address']}:{device_data['port']}"
+                if active_url_part == device_url_part:
+                    self.clear_active_peer_view()
+
+        del self.online_devices_data[service_name]
+
+        for i in range(self.device_list_widget.count()):
+            item = self.device_list_widget.item(i)
+            if item and item.data(Qt.ItemDataRole.UserRole) == service_name:
+                self.device_list_widget.takeItem(i)
+                break
+
+        self._update_status_bar_device_count()
+
+    def _update_status_bar_device_count(self):
+        """更新状态栏中的设备计数。"""
+        count = len(self.online_devices_data)
+        self.status_bar_label.setText(f"发现在线设备: {count} 个" if count > 0 else "就绪. 正在扫描局域网设备...")
+
+    def populate_initial_devices(self):
+        """应用启动时，获取一次完整的设备列表进行填充。"""
+        print("正在获取初始设备列表...")
+        self.device_list_widget.clear()
+        self.online_devices_data.clear()
+
+        peers = self.api_client.get_peers() if self.api_client else None
+        if not peers:
+            self._update_status_bar_device_count()
+            return
+
+        my_service_name = f"{self.controller.service_name}._netneighbor._tcp.local."
+        for name, data in peers.items():
+            if name != my_service_name:
+                self._add_device_to_list(name, data)
+
+    def _process_device_list_updates(self):
+        """
+        批处理所有待处理的设备列表UI更新。由QTimer触发。
+        """
+        # 复制当前队列的内容，然后立刻清空，以便接收下一批事件
+        add_batch = self.device_add_queue[:]
+        remove_batch = self.device_remove_queue[:]
+        self.device_add_queue.clear()
+        self.device_remove_queue.clear()
+
+        # 关键优化：在批量操作前，暂停UI的重绘，防止界面闪烁
+        self.device_list_widget.setUpdatesEnabled(False)
+
+        try:
+            # 批量处理移除
+            # 先创建一个待移除名称的集合，以提高查找效率
+            remove_set = set(remove_batch)
+            items_to_delete = []
+            for i in range(self.device_list_widget.count()):
+                item = self.device_list_widget.item(i)
+                if item and item.data(Qt.ItemDataRole.UserRole) in remove_set:
+                    items_to_delete.append(item)
+
+            for item in items_to_delete:
+                self.device_list_widget.takeItem(self.device_list_widget.row(item))
+
+            # 批量处理添加
+            for service_name, device_data in add_batch:
+                self._add_device_to_list(service_name, device_data)  # 调用我们已有的添加方法
+
+        finally:
+            # 关键优化：在所有操作完成后，一次性地重新启用UI重绘并应用所有更改
+            self.device_list_widget.setUpdatesEnabled(True)
+
+        # 最后，只更新一次状态栏的计数
+        self._update_status_bar_device_count()
 
     def update_my_shares_list(self):
         """从配置文件加载并更新本机共享列表。"""

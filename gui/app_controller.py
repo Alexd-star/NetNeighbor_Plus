@@ -1,5 +1,4 @@
-# 文件: gui/app_controller.py
-# (已按 PEP 8 规范格式化, 并修复逻辑问题)
+# 文件: gui/app_controller.py (已解耦)
 import asyncio
 import copy
 import getpass
@@ -16,32 +15,24 @@ from PySide6.QtCore import QObject, Signal
 from core.config_loader import get_config, get_shares
 from core.discovery import DiscoveryService
 from core.file_watcher import start_file_watcher
-from core.web_api import app as fastapi_app
+from core.web_api import app as fastapi_app, manager as websocket_manager
+# 【解耦第1步】: 导入事件总线
+from core.event_bus import bus
 
 
 class UvicornServer(threading.Thread):
     """在一个独立的线程中运行 Uvicorn 服务器。"""
-    def __init__(self, config, started_callback=None):
+
+    def __init__(self, config):
         super().__init__()
         self.daemon = True
-        self._stop_event = threading.Event()
         self.server = uvicorn.Server(config)
-        self.started_callback = started_callback
 
     def run(self):
-        """线程的执行体, 运行服务器直到被停止。"""
         self.server.run()
 
     def stop(self):
-        """从外部请求停止服务器。"""
         self.server.should_exit = True
-
-    def wait_for_startup(self):
-        """阻塞直到服务器内部的 'started' 标志为 True。"""
-        while not self.server.started and not self._stop_event.is_set():
-            time.sleep(0.1)
-        if self.server.started and self.started_callback:
-            self.started_callback()
 
 
 class AppController(QObject):
@@ -61,9 +52,7 @@ class AppController(QObject):
             self.port = self.running_config.get("service", {}).get("port", 8080)
 
         self.tcp_port = self.port + 1
-        self.device_name = self.running_config.get("service", {}).get(
-            "name", "auto"
-        )
+        self.device_name = self.running_config.get("service", {}).get("name", "auto")
         self.service_name = self.device_name
         self.device_properties = {}
 
@@ -74,6 +63,24 @@ class AppController(QObject):
         self.discovery_service = None
         self.watcher_thread = None
         self.is_running = False
+
+        # 【解耦第2步】: 在初始化时，订阅 "peer_update" 事件
+        bus.subscribe("peer_update", self._handle_peer_update_event)
+
+    # 【解耦第3步】: 创建一个处理事件的回调方法
+    def _handle_peer_update_event(self, event_data: dict):
+        """当从事件总线接收到设备更新事件时，通过WebSocket广播出去。"""
+        # 这个操作需要在一个事件循环中运行。
+        # 我们从 fastapi app state 中获取正在运行的循环。
+        loop = getattr(fastapi_app.state, 'asyncio_loop', None)
+        if loop and loop.is_running():
+            # 使用 call_soon_threadsafe 是因为这个方法可能从任何线程被调用
+            # (例如，zeroconf的回调是在它自己的线程里)
+            # 这能安全地将任务调度到主事件循环中执行。
+            loop.call_soon_threadsafe(
+                asyncio.create_task,
+                websocket_manager.broadcast(json.dumps(event_data))
+            )
 
     def _get_dynamic_device_type(self) -> str:
         """根据操作系统动态判断设备类型。"""
@@ -87,8 +94,7 @@ class AppController(QObject):
 
     def start_all_services(self):
         """启动所有后台服务。"""
-        if self.is_running:
-            return
+        if self.is_running: return
         try:
             host_ip = socket.gethostbyname(socket.gethostname())
         except socket.gaierror:
@@ -96,18 +102,10 @@ class AppController(QObject):
 
         print("正在启动所有后台服务...")
 
-        base_name = self.running_config.get("service", {}).get(
-            "name", "auto"
-        ).strip()
-        if not base_name or base_name.lower() == 'auto':
-            dynamic_base_name = socket.gethostname()
-        else:
-            dynamic_base_name = base_name
+        base_name = self.running_config.get("service", {}).get("name", "auto").strip()
+        dynamic_base_name = socket.gethostname() if not base_name or base_name.lower() == 'auto' else base_name
 
-        if self.port_override:
-            self.device_name = f"{dynamic_base_name}-{self.port}"
-        else:
-            self.device_name = dynamic_base_name
+        self.device_name = f"{dynamic_base_name}-{self.port}" if self.port_override else dynamic_base_name
         self.service_name = self.device_name
 
         self.device_properties = {
@@ -128,36 +126,29 @@ class AppController(QObject):
         fastapi_app.state.controller = self
         fastapi_app.state.tcp_port = self.tcp_port
 
-        uvicorn_config = uvicorn.Config(
-            fastapi_app, host="0.0.0.0", port=self.port,
-            log_level="info", lifespan="on"
-        )
+        uvicorn_config = uvicorn.Config(fastapi_app, host="0.0.0.0", port=self.port, log_level="info", lifespan="on")
         self.uvicorn_server_thread = UvicornServer(uvicorn_config)
         self.uvicorn_server_thread.start()
 
-        waiter_thread = threading.Thread(
-            target=self._wait_and_signal_startup, daemon=True
-        )
+        # 使用一个独立的线程等待 Uvicorn 启动完毕后发射信号
+        waiter_thread = threading.Thread(target=self._wait_and_signal_startup, daemon=True)
         waiter_thread.start()
+
         self.is_running = True
 
     def _wait_and_signal_startup(self):
         """等待 Uvicorn 启动完毕后, 发射 server_started 信号。"""
-        while not self.uvicorn_server_thread.server.started:
-            if self.stop_event.is_set():
-                return
+        # 等待 uvicorn.Server 内部的 started 标志
+        while not getattr(self.uvicorn_server_thread.server, 'started', False):
+            if self.stop_event.is_set(): return
             time.sleep(0.1)
 
-        print(
-            f"API服务器已在 http://{socket.gethostbyname(socket.gethostname())}"
-            f":{self.port} 启动"
-        )
+        print(f"API服务器已在 http://{socket.gethostbyname(socket.gethostname())}:{self.port} 启动")
         self.server_started.emit()
 
     def stop_all_services(self):
         """以正确的顺序, 安全地停止所有服务。"""
-        if not self.is_running:
-            return
+        if not self.is_running: return
         print("正在关闭所有服务...")
         self.stop_event.set()
         self.watcher_stop_event.set()
@@ -165,22 +156,15 @@ class AppController(QObject):
         try:
             loop = getattr(fastapi_app.state, 'asyncio_loop', None)
             stop_event = getattr(fastapi_app.state, 'tcp_stop_event', None)
-            if loop and stop_event and not stop_event.is_set():
-                # 检查循环是否仍在运行, 避免在已关闭的循环上调用
-                if loop.is_running():
-                    loop.call_soon_threadsafe(stop_event.set)
+            if loop and stop_event and loop.is_running() and not stop_event.is_set():
+                loop.call_soon_threadsafe(stop_event.set)
         except Exception as e:
             print(f"停止TCP服务器时发生非致命错误: {e}")
 
-        if self.discovery_service:
-            self.discovery_service.stop()
-        if self.uvicorn_server_thread:
-            self.uvicorn_server_thread.stop()
-
-        if self.uvicorn_server_thread:
-            self.uvicorn_server_thread.join(timeout=2)
-        if self.watcher_thread and self.watcher_thread.is_alive():
-            self.watcher_thread.join(timeout=2)
+        if self.discovery_service: self.discovery_service.stop()
+        if self.uvicorn_server_thread: self.uvicorn_server_thread.stop()
+        if self.uvicorn_server_thread: self.uvicorn_server_thread.join(timeout=2)
+        if self.watcher_thread and self.watcher_thread.is_alive(): self.watcher_thread.join(timeout=2)
 
         self.is_running = False
         print("所有服务已关闭。")
@@ -188,26 +172,15 @@ class AppController(QObject):
     def _start_file_watcher(self):
         """启动文件监视器。"""
         paths = [s['path'] for s in get_shares() if os.path.exists(s['path'])]
-        if not paths:
-            print("没有有效的共享文件夹可供监视。")
-            return
+        if not paths: return
 
-        normalized_paths = [os.path.normpath(p) for p in paths]
         from core.web_api import manager
-
         def on_change():
-            """当受监控的文件系统发生变化时执行的回调。"""
-            # --- 【逻辑修正】 ---
-            # 1. 首先检查服务是否仍在运行, 避免在关闭过程中发送不必要的消息
-            if not self.is_running or self.stop_event.is_set():
-                return
-
+            if not self.is_running or self.stop_event.is_set(): return
             event_data = {"event": "refresh_files"}
             try:
-                # 2. 从 app.state 安全地获取 loop, 如果不存在则不执行
                 loop = getattr(fastapi_app.state, 'asyncio_loop', None)
                 if loop and loop.is_running():
-                    # 3. 在广播任务上创建一个包装任务, 这样可以捕获异常
                     async def safe_broadcast():
                         try:
                             await manager.broadcast(json.dumps(event_data))
@@ -216,13 +189,11 @@ class AppController(QObject):
 
                     loop.call_soon_threadsafe(loop.create_task, safe_broadcast())
             except Exception:
-                # 在关闭期间, loop 可能会变得不可用, 这是正常的。
-                # 我们可以安全地忽略这个异常。
                 pass
 
         self.watcher_thread = threading.Thread(
             target=start_file_watcher,
-            args=(normalized_paths, on_change, self.watcher_stop_event),
+            args=([os.path.normpath(p) for p in paths], on_change, self.watcher_stop_event),
             daemon=True
         )
         self.watcher_thread.start()
@@ -234,6 +205,5 @@ class AppController(QObject):
             self.watcher_stop_event.set()
             self.watcher_thread.join(timeout=2)
             print("旧的文件监视器已停止。")
-
         self.watcher_stop_event.clear()
         self._start_file_watcher()
