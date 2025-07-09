@@ -24,7 +24,6 @@ class DebouncedChangeHandler(FileSystemEventHandler):
         current_time = time.time()
         if current_time - self.last_triggered_time > self.debounce_interval:
             self.last_triggered_time = current_time
-            print(f"Watchdog 检测到变化: {event.src_path}, 事件: {event.event_type}")
             self.callback()
 
 

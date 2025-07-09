@@ -167,8 +167,8 @@ class WorkerThread(QThread):
                 task_type = task.get("type")
                 if task_type == "download_file":
                     self._run_download_file(task)
-                elif task_type == "download_folder":
-                    self._run_download_folder(task)
+                elif task_type == "download_folder_tcp":
+                    self._run_download_folder_tcp(task)
                 elif task_type == "upload_folder":
                     self._run_upload_folder(task)
                 elif task_type == "upload_file":
@@ -192,25 +192,31 @@ class WorkerThread(QThread):
 
     # --- 【优化2】重构传输函数以包含速度计算逻辑 ---
     def _transfer_loop(self, iterator, file_handle, total_size):
-        """通用的传输循环, 包含进度和速度计算。"""
+        """通用的传输循环, 包含进度、速度计算和超详细的日志。"""
         start_time = time.time()
         last_update_time = start_time
         bytes_since_last_update = 0
         transferred_bytes = 0
+        chunk_count = 0
+
+        print(f"[CLIENT] 开始文件传输循环。预计总大小: {total_size} 字节。")
 
         for chunk in iterator:
             if not self._is_running:
+                print("[CLIENT] 传输被用户取消。")
                 raise InterruptedError("Transfer cancelled by user")
 
-            file_handle.write(chunk)
             chunk_len = len(chunk)
+            chunk_count += 1
+
+            file_handle.write(chunk)
+
             transferred_bytes += chunk_len
             bytes_since_last_update += chunk_len
 
             current_time = time.time()
             time_delta = current_time - last_update_time
 
-            # 每 0.5 秒更新一次速度
             if time_delta >= 0.5:
                 speed = bytes_since_last_update / time_delta
                 self.speed_update.emit(f"{self._format_size(speed)}/s")
@@ -220,7 +226,7 @@ class WorkerThread(QThread):
             if total_size > 0:
                 self.progress.emit(int((transferred_bytes / total_size) * 100))
 
-        # 传输结束, 清空速度显示
+        print(f"[CLIENT] 传输循环正常结束。总共接收 {chunk_count} 个数据块，总大小: {transferred_bytes} 字节。")
         self.speed_update.emit("")
 
     def _run_download_file(self, task_info):
@@ -237,22 +243,32 @@ class WorkerThread(QThread):
 
         self.file_finished.emit(f"文件 '{file_name}' 下载完成！")
 
-    def _run_download_folder(self, task_info):
-        """下载文件夹为ZIP的具体实现 (优化提示文本)。"""
-        p_client, s_name = task_info['peer_client'], task_info['share_name']
-        r_path, save_p = task_info['remote_path'], task_info['save_path']
+
+    def _run_download_folder_tcp(self, task_info):
+        """
+        【最终架构版】通过高性能TCP通道下载并打包文件夹。
+        使用 'with' 语句来确保连接资源被正确管理。
+        """
+        peer_client, share_name = task_info['peer_client'], task_info['share_name']
+        remote_path, save_path = task_info['remote_path'], task_info['save_path']
         folder_name = task_info['name']
 
-        # 优化提示，告知用户正在进行流式传输
-        self.progress_text_update.emit(f"开始下载 '{folder_name}.zip' (流式传输，大小未知)...")
-        with p_client.download_folder_stream(s_name, r_path) as resp:
-            resp.raise_for_status()
-            total = int(resp.headers.get('content-length', 0))  # 对于流式通常为0
-            with open(save_p, "wb") as f:
-                self._transfer_loop(resp.iter_bytes(chunk_size=8192), f, total)
+        self.progress_text_update.emit(f"开始下载 '{folder_name}.zip' (TCP高速模式)...")
+
+        try:
+            # 使用 'with' 语句来安全地使用我们新的 TcpDownloader
+            # 当 with 代码块结束时, downloader.__exit__ 会被自动调用, socket 会被关闭
+            with peer_client.download_folder_tcp(share_name, remote_path) as downloader:
+                with open(save_path, "wb") as f:
+                    # 将 downloader (它本身就是个迭代器) 传入传输循环
+                    # TCP流大小未知, 传入 0, 进度条会显示为不确定模式
+                    self._transfer_loop(downloader, f, 0)
+        except Exception as e:
+            # 将任何发生的异常往上抛，由总的错误处理器来显示给用户
+            raise e
 
         self.file_finished.emit(
-            f"文件夹 '{folder_name}' 已下载为 '{os.path.basename(save_p)}'！"
+            f"文件夹 '{folder_name}' 已通过TCP高速下载为 '{os.path.basename(save_path)}'！"
         )
 
     def _run_upload_file(self, task_info):
@@ -370,6 +386,7 @@ class MainWindow(QMainWindow):
         self.ws_local_thread: Optional[WebSocketClientThread] = None
         self.ws_remote_thread: Optional[WebSocketClientThread] = None
         self.progress_dialog: Optional[QProgressDialog] = None
+        self.is_transfer_active = False
 
         # --- 【优化4】增加一个变量来存储进度对话框的标签文本 ---
         self._progress_label_text = ""
@@ -389,45 +406,38 @@ class MainWindow(QMainWindow):
     def start_worker_thread(self, progress_title: str, tasks: List[Dict]):
         """
         启动工作线程并显示进度对话框。
-        - 仅在下载文件夹时使用不确定模式的动画进度条。
-        - 其他所有情况(单文件、多文件下载)保持原始逻辑。
+        [最终修复] 修正对文件夹下载任务的判断逻辑，并增加提示文本。
         """
         if self.worker_thread and self.worker_thread.isRunning():
-            QMessageBox.warning(
-                self, "任务正在进行", "已有文件在传输中，请稍后重试。", QMessageBox.Ok
-            )
+            QMessageBox.warning(self, "任务正在进行", "已有文件在传输中，请稍后重试。", QMessageBox.Ok)
             return
 
+        self.is_transfer_active = True
         self.progress_dialog = QProgressDialog(self)
         self.progress_dialog.setWindowTitle(progress_title)
         self.progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
 
-        self._progress_label_text = "准备开始..."
-        self.progress_dialog.setLabelText(self._progress_label_text)
 
-        # --- 【核心修改】---
-        # 1. 检查任务列表中是否包含任何 "download_folder" 类型的任务
-        is_downloading_folder = any(task.get("type") == "download_folder" for task in tasks)
+        # 1. 正确检查任务列表中是否包含任何 "download_folder_tcp" 类型的任务
+        is_downloading_folder = any(task.get("type") == "download_folder_tcp" for task in tasks)
 
         if is_downloading_folder:
-            # 2. 如果是，则强制使用不确定模式的动画进度条 (0-0)
+            # 2. 如果是，则设置进度条为不确定模式（滚动条）
             self.progress_dialog.setRange(0, 0)
+            # 3. 增加友好的提示信息
+            self._progress_label_text = "正在准备流式传输，总大小未知..."
         else:
-            # 3. 如果否 (即所有任务都是文件下载或上传)，则完全恢复原始逻辑
+            # 4. 如果是文件下载或上传，则恢复原始的确定模式进度条
             is_single_task = len(tasks) == 1
             self.progress_dialog.setRange(0, 100 if is_single_task else 0)
+            self._progress_label_text = "准备开始..."
+
+        self.progress_dialog.setLabelText(self._progress_label_text)
 
         self.worker_thread = WorkerThread(tasks)
         self.worker_thread.progress.connect(self.progress_dialog.setValue)
-
-        # --- 【优化5】连接新的信号到槽函数 ---
-        self.worker_thread.progress_text_update.connect(
-            self.on_worker_progress_text_update
-        )
-        self.worker_thread.speed_update.connect(
-            self.on_worker_speed_update
-        )
-
+        self.worker_thread.progress_text_update.connect(self.on_worker_progress_text_update)
+        self.worker_thread.speed_update.connect(self.on_worker_speed_update)
         self.worker_thread.file_finished.connect(self.on_worker_file_finished)
         self.worker_thread.all_finished.connect(self.on_worker_all_finished)
         self.worker_thread.error.connect(self.on_worker_error)
@@ -836,6 +846,11 @@ class MainWindow(QMainWindow):
                     if self.device_list_widget.currentItem() and self.active_peer_client:
                         self.handle_device_click(self.device_list_widget.currentItem(), force_refresh=True)
                 elif event == "refresh_files":
+                    # 如果一个传输任务正在进行，就忽略这个刷新请求
+                    if self.is_transfer_active:
+                        return
+
+                    # 只有在空闲时才执行刷新
                     self.add_log_message("远程文件变更，延时刷新...", "🔄")
                     QTimer.singleShot(500, self.refresh_current_file_view)
         except json.JSONDecodeError:
@@ -883,7 +898,11 @@ class MainWindow(QMainWindow):
         return items
 
     def handle_download_action(self):
-        """处理下载按钮或右键菜单的点击事件。"""
+        """
+        处理下载按钮或右键菜单的点击事件。
+        【架构统一】: 所有文件夹下载现在都走TCP通道，并保存为.tar文件。
+                     旧的HTTP方式作为备用，也会请求.tar文件。
+        """
         items_to_download = self._get_items_to_process()
         if not items_to_download:
             QMessageBox.information(self, "提示", "请先勾选或选中要下载的文件/文件夹。", QMessageBox.Ok)
@@ -897,18 +916,27 @@ class MainWindow(QMainWindow):
             remote_path = "/".join(self.active_path_stack + [item['name']])
 
             if item['is_dir']:
-                save_path = os.path.join(save_dir, f"{item['name']}.zip")
+                # --- 【核心修正】: 无论新旧逻辑，文件夹都保存为 .tar ---
+                save_path = os.path.join(save_dir, f"{item['name']}.tar")
                 tasks.append({
-                    "type": "download_folder", "name": item['name'],
-                    "peer_client": self.active_peer_client, "share_name": self.share_selector_combo.currentText(),
-                    "remote_path": remote_path, "save_path": save_path,
+                    # 优先使用新的TCP高速模式
+                    "type": "download_folder_tcp",
+                    "name": item['name'],
+                    "peer_client": self.active_peer_client,
+                    "share_name": self.share_selector_combo.currentText(),
+                    "remote_path": remote_path,
+                    "save_path": save_path,
                 })
             else:
+                # 文件下载逻辑保持不变
                 save_path = os.path.join(save_dir, item['name'])
                 tasks.append({
-                    "type": "download_file", "name": item['name'],
-                    "peer_client": self.active_peer_client, "share_name": self.share_selector_combo.currentText(),
-                    "remote_path": remote_path, "save_path": save_path,
+                    "type": "download_file",
+                    "name": item['name'],
+                    "peer_client": self.active_peer_client,
+                    "share_name": self.share_selector_combo.currentText(),
+                    "remote_path": remote_path,
+                    "save_path": save_path,
                 })
 
         if tasks:
@@ -947,6 +975,7 @@ class MainWindow(QMainWindow):
 
     def on_worker_all_finished(self):
         """当工作线程完成所有任务时调用的槽函数。"""
+        self.is_transfer_active = False
         if self.progress_dialog: self.progress_dialog.close()
         if self.worker_thread and not self.worker_thread.has_errors:
             QMessageBox.information(self, "任务完成", "所有传输任务已成功完成。", QMessageBox.Ok)
@@ -957,6 +986,7 @@ class MainWindow(QMainWindow):
 
     def on_worker_error(self, error_message: str):
         """当工作线程发生错误时调用的槽函数。"""
+        self.is_transfer_active = False
         title = "传输错误"
         friendly_message = f"发生错误: {error_message}"
         error_lower = str(error_message).lower()
