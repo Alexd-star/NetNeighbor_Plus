@@ -281,8 +281,174 @@ class WorkerThread(QThread):
             f"文件夹 '{folder_name}' 已通过TCP高速下载为 '{os.path.basename(save_path)}'！"
         )
 
-    def _run_upload_file(self, task_info):
-        """上传单个文件的具体实现。"""
+    def _run_upload_folder(self, task_info):
+        """上传整个文件夹的具体实现。"""
+        local_folder, p_client = task_info['local_path'], task_info['peer_client']
+        s_name, base_dest = task_info['share_name'], task_info['dest_path']
+        folder_name = os.path.basename(local_folder)
+        conflict_action = task_info.get('conflict_action', 'ask')  # 默认询问用户
+
+        # 检查文件夹是否已存在，如果是ask模式，先询问用户
+        root_remote_path = os.path.join(base_dest, folder_name).replace('\\', '/')
+        
+        # 尝试获取远程文件夹内容，如果成功则说明文件夹存在
+        folder_exists = False
+        try:
+            files = p_client.get_files(s_name, root_remote_path)
+            folder_exists = files is not None
+        except Exception:
+            folder_exists = False
+            
+        # 如果文件夹存在且需要询问用户
+        if folder_exists and conflict_action == 'ask':
+            from PySide6.QtWidgets import QMessageBox
+            
+            conflict_result = {"action": None}
+            
+            # 创建一个模态对话框
+            msg_box = QMessageBox()
+            msg_box.setWindowTitle("文件夹冲突")
+            msg_box.setText(f"文件夹 '{folder_name}' 已存在于目标位置。")
+            msg_box.setInformativeText("请选择如何处理此冲突：")
+            merge_btn = msg_box.addButton("合并内容", QMessageBox.ButtonRole.AcceptRole)
+            rename_btn = msg_box.addButton("重命名", QMessageBox.ButtonRole.ActionRole)
+            skip_btn = msg_box.addButton("跳过", QMessageBox.ButtonRole.RejectRole)
+            
+            msg_box.exec()
+            
+            clicked_button = msg_box.clickedButton()
+            
+            if clicked_button == merge_btn:
+                conflict_result["action"] = "merge"
+            elif clicked_button == rename_btn:
+                conflict_result["action"] = "rename"
+            elif clicked_button == skip_btn:
+                conflict_result["action"] = "skip"
+            
+            # 根据用户选择设置冲突处理方式
+            if conflict_result.get("action") is None:
+                # 用户取消了对话框
+                return
+                
+            conflict_action = conflict_result["action"]
+            
+            # 如果用户选择跳过，直接返回
+            if conflict_action == "skip":
+                self.file_finished.emit(f"已跳过上传: {folder_name}")
+                return
+                
+            # 如果用户选择重命名
+            if conflict_action == "rename":
+                # 生成新名称
+                counter = 1
+                new_folder_name = f"{folder_name} ({counter})"
+                new_remote_path = os.path.join(base_dest, new_folder_name).replace('\\', '/')
+                
+                # 检查新名称是否存在，如果存在则增加计数
+                while True:
+                    try:
+                        files = p_client.get_files(s_name, new_remote_path)
+                        if files is None:
+                            break
+                        counter += 1
+                        new_folder_name = f"{folder_name} ({counter})"
+                        new_remote_path = os.path.join(base_dest, new_folder_name).replace('\\', '/')
+                    except Exception:
+                        break
+                
+                # 更新文件夹路径
+                folder_name = new_folder_name
+                root_remote_path = new_remote_path
+                self.file_finished.emit(f"文件夹已重命名为: {folder_name}")
+        
+        # 创建远程文件夹（如果是merge模式，这个操作可能是多余的，但不会有害）
+        p_client.create_directory(s_name, root_remote_path)
+        
+        # 不再为每个目录创建发送消息，而是在开始时发送一条消息
+        self.file_finished.emit(f"开始上传文件夹: {folder_name}")
+
+        # 首先收集所有需要上传的文件和创建的目录
+        files_to_upload = []
+        dirs_to_create = []
+        
+        for root, dirs, files in os.walk(local_folder):
+            if not self._is_running:
+                raise InterruptedError("Upload cancelled")
+
+            rel_path = os.path.relpath(root, local_folder)
+            for d in dirs:
+                remote_dir = os.path.join(root_remote_path, rel_path, d)
+                dirs_to_create.append(remote_dir.replace('\\', '/'))
+
+            for f in files:
+                remote_folder = os.path.join(root_remote_path, rel_path)
+                files_to_upload.append({
+                    'local_file': os.path.join(root, f),
+                    'remote_dest': remote_folder.replace('\\', '/'),
+                    'name': f
+                })
+                
+        # 创建所有目录
+        for remote_dir in dirs_to_create:
+            p_client.create_directory(s_name, remote_dir)
+            
+        # 如果没有文件要上传，直接返回
+        if not files_to_upload:
+            self.file_finished.emit(f"文件夹 '{folder_name}' 上传完成（空文件夹）")
+            return
+            
+        # 计算总大小，用于进度条
+        total_size = sum(os.path.getsize(file_info['local_file']) for file_info in files_to_upload)
+        uploaded_size = 0
+        processed_files = 0
+        
+        # 上传所有文件
+        total_files = len(files_to_upload)
+        for i, file_task in enumerate(files_to_upload):
+            if not self._is_running:
+                raise InterruptedError("Upload cancelled")
+                
+            # 更新进度文本，显示当前处理的文件和总体进度
+            self.progress_text_update.emit(
+                f"上传文件夹: {folder_name} ({i + 1}/{total_files})"
+            )
+            
+            local_file = file_task['local_file']
+            file_size = os.path.getsize(local_file)
+            
+            # 创建上传任务但不显示每个文件的完成消息
+            upload_task = {
+                "type": "upload_file_silent",  # 使用新的类型标记，避免显示消息
+                "local_path": local_file,
+                "peer_client": p_client,
+                "share_name": s_name,
+                "dest_path": file_task['remote_dest'],
+                "conflict_action": conflict_action if conflict_action != "merge" else "ask"  # 如果是合并模式，对单个文件仍需询问
+            }
+            
+            # 使用修改后的上传方法
+            try:
+                # 直接调用上传逻辑，但不发送完成消息
+                result = self._run_upload_file_internal(upload_task)
+                
+                # 更新已上传大小和文件计数
+                uploaded_size += file_size
+                processed_files += 1
+                
+                # 更新总体进度
+                if total_size > 0:
+                    progress_percent = int((uploaded_size / total_size) * 100)
+                    self.progress.emit(progress_percent)
+                    
+            except Exception as e:
+                # 记录错误但继续上传其他文件
+                print(f"上传文件 {file_task['name']} 时出错: {e}")
+                
+        # 所有文件上传完成后，发送一条总结消息
+        self.file_finished.emit(f"文件夹 '{folder_name}' 上传完成 ({processed_files}/{total_files} 个文件)")
+
+    def _run_upload_file_internal(self, task_info):
+        """上传单个文件的内部实现，不发送完成消息。"""
         local_path, p_client = task_info['local_path'], task_info['peer_client']
         s_name, dest = task_info['share_name'], task_info['dest_path']
         file_name = os.path.basename(local_path)
@@ -293,47 +459,41 @@ class WorkerThread(QThread):
             # 检查文件是否存在
             file_exists = p_client.check_file_exists(s_name, dest, file_name)
             if file_exists:
-                # 发送信号询问用户如何处理冲突
-                from PySide6.QtCore import QMetaObject, Qt, Q_ARG
-                from PySide6.QtWidgets import QApplication, QMessageBox
+                # 直接在工作线程中创建对话框，不使用invokeMethod
+                from PySide6.QtWidgets import QMessageBox, QCheckBox
                 
                 conflict_result = {"action": None}
                 
-                def ask_conflict_action():
-                    msg_box = QMessageBox()
-                    msg_box.setWindowTitle("文件冲突")
-                    msg_box.setText(f"文件 '{file_name}' 已存在于目标位置。")
-                    msg_box.setInformativeText("请选择如何处理此冲突：")
-                    overwrite_btn = msg_box.addButton("覆盖", QMessageBox.ButtonRole.AcceptRole)
-                    rename_btn = msg_box.addButton("自动重命名", QMessageBox.ButtonRole.ActionRole)
-                    skip_btn = msg_box.addButton("跳过", QMessageBox.ButtonRole.RejectRole)
-                    apply_to_all_cb = QCheckBox("应用到所有冲突")
-                    msg_box.setCheckBox(apply_to_all_cb)
-                    
-                    msg_box.exec()
-                    
-                    clicked_button = msg_box.clickedButton()
-                    apply_to_all = apply_to_all_cb.isChecked()
-                    
-                    if clicked_button == overwrite_btn:
-                        conflict_result["action"] = "overwrite"
-                    elif clicked_button == rename_btn:
-                        conflict_result["action"] = "rename"
-                    elif clicked_button == skip_btn:
-                        conflict_result["action"] = "skip"
-                    
-                    if apply_to_all:
-                        conflict_result["apply_to_all"] = True
+                # 创建一个模态对话框
+                msg_box = QMessageBox()
+                msg_box.setWindowTitle("文件冲突")
+                msg_box.setText(f"文件 '{file_name}' 已存在于目标位置。")
+                msg_box.setInformativeText("请选择如何处理此冲突：")
+                overwrite_btn = msg_box.addButton("覆盖", QMessageBox.ButtonRole.AcceptRole)
+                rename_btn = msg_box.addButton("自动重命名", QMessageBox.ButtonRole.ActionRole)
+                skip_btn = msg_box.addButton("跳过", QMessageBox.ButtonRole.RejectRole)
+                apply_to_all_cb = QCheckBox("应用到所有冲突")
+                msg_box.setCheckBox(apply_to_all_cb)
                 
-                # 在主线程中执行对话框
-                QMetaObject.invokeMethod(QApplication.instance(), ask_conflict_action, 
-                                        Qt.ConnectionType.BlockingQueuedConnection)
+                msg_box.exec()
+                
+                clicked_button = msg_box.clickedButton()
+                apply_to_all = apply_to_all_cb.isChecked()
+                
+                if clicked_button == overwrite_btn:
+                    conflict_result["action"] = "overwrite"
+                elif clicked_button == rename_btn:
+                    conflict_result["action"] = "rename"
+                elif clicked_button == skip_btn:
+                    conflict_result["action"] = "skip"
+                
+                if apply_to_all:
+                    conflict_result["apply_to_all"] = True
                 
                 # 根据用户选择设置冲突处理方式
                 if conflict_result.get("action") is None:
                     # 用户取消了对话框
-                    self.file_finished.emit(f"已取消上传: {file_name}")
-                    return
+                    return {"status": "cancelled"}
                     
                 conflict_action = conflict_result["action"]
                 
@@ -341,13 +501,12 @@ class WorkerThread(QThread):
                 if conflict_result.get("apply_to_all"):
                     # 更新所有后续任务的冲突处理方式
                     for task in self.tasks:
-                        if task.get("type") == "upload_file" and not task.get("processed", False):
+                        if (task.get("type") == "upload_file" or task.get("type") == "upload_file_silent") and not task.get("processed", False):
                             task["conflict_action"] = conflict_action
                 
                 # 如果用户选择跳过，直接返回
                 if conflict_action == "skip":
-                    self.file_finished.emit(f"已跳过上传: {file_name}")
-                    return
+                    return {"status": "skipped"}
 
         # UploadStreamer 现在也需要包含速度计算逻辑
         # (为了简化, 我们在回调中计算)
@@ -377,6 +536,17 @@ class WorkerThread(QThread):
 
         self.speed_update.emit("")
         
+        # 返回上传结果
+        return result
+        
+    def _run_upload_file(self, task_info):
+        """上传单个文件的具体实现。"""
+        local_path = task_info['local_path']
+        file_name = os.path.basename(local_path)
+        
+        # 调用内部实现
+        result = self._run_upload_file_internal(task_info)
+        
         # 根据上传结果显示不同的消息
         if result.get("action") == "renamed":
             new_filename = result.get("filename", file_name)
@@ -385,49 +555,6 @@ class WorkerThread(QThread):
             self.file_finished.emit(f"已跳过上传: {file_name}")
         else:
             self.file_finished.emit(f"文件 '{file_name}' 上传成功。")
-
-    def _run_upload_folder(self, task_info):
-        """上传整个文件夹的具体实现。"""
-        local_folder, p_client = task_info['local_path'], task_info['peer_client']
-        s_name, base_dest = task_info['share_name'], task_info['dest_path']
-        folder_name = os.path.basename(local_folder)
-        conflict_action = task_info.get('conflict_action', 'ask')  # 默认询问用户
-
-        root_remote_path = os.path.join(base_dest, folder_name).replace('\\', '/')
-        p_client.create_directory(s_name, root_remote_path)
-        self.file_finished.emit(f"在远程创建目录: {root_remote_path}")
-
-        files_to_upload = []
-        for root, dirs, files in os.walk(local_folder):
-            if not self._is_running:
-                raise InterruptedError("Upload cancelled")
-
-            rel_path = os.path.relpath(root, local_folder)
-            for d in dirs:
-                remote_dir = os.path.join(root_remote_path, rel_path, d)
-                p_client.create_directory(s_name, remote_dir.replace('\\', '/'))
-
-            for f in files:
-                remote_folder = os.path.join(root_remote_path, rel_path)
-                files_to_upload.append({
-                    'local_file': os.path.join(root, f),
-                    'remote_dest': remote_folder.replace('\\', '/')
-                })
-
-        total_files = len(files_to_upload)
-        for i, file_task in enumerate(files_to_upload):
-            self.progress_text_update.emit(
-                f"上传文件 ({i + 1}/{total_files}): {os.path.basename(file_task['local_file'])}"
-            )
-            upload_task = {
-                "type": "upload_file",
-                "local_path": file_task['local_file'],
-                "peer_client": p_client,
-                "share_name": s_name,
-                "dest_path": file_task['remote_dest'],
-                "conflict_action": conflict_action  # 传递冲突处理选项
-            }
-            self._run_upload_file(upload_task)
 
     # --- 【优化3】将格式化函数移到 WorkerThread 中，方便内部调用 ---
     def _format_size(self, size_bytes: Union[int, float]) -> str:
@@ -446,6 +573,117 @@ class WorkerThread(QThread):
         p = math.pow(1024, i + 1)
         s = round(size_bytes / p, 2)
         return f"{s} {power_labels[i]}"
+
+
+class FileTableWidget(QTableWidget):
+    """自定义表格控件，支持拖拽上传并显示视觉反馈"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAcceptDrops(True)
+        self.main_window = None
+        self.drop_overlay = None
+        
+    def dragEnterEvent(self, event: QDragEnterEvent):
+        """处理拖拽进入事件，无条件接受拖拽"""
+        # 只检查是否是文件或文件夹，不检查权限
+        if event.mimeData().hasUrls():
+            event.accept()
+            # 显示拖拽覆盖层
+            self.showDropOverlay()
+        else:
+            event.ignore()
+            
+    def dragMoveEvent(self, event):
+        """处理拖拽移动事件，始终接受拖拽"""
+        # 只要是文件或文件夹，就接受拖拽
+        if event.mimeData().hasUrls():
+            event.accept()
+        else:
+            event.ignore()
+            
+    def dragLeaveEvent(self, event):
+        """处理拖拽离开事件，隐藏视觉反馈"""
+        self.hideDropOverlay()
+        event.accept()
+            
+    def dropEvent(self, event: QDropEvent):
+        """处理拖拽释放事件，在此处检查权限"""
+        self.hideDropOverlay()
+        
+        if not event.mimeData().hasUrls():
+            event.ignore()
+            return
+            
+        # 获取所有拖拽的URL
+        urls = event.mimeData().urls()
+        if not urls:
+            event.ignore()
+            return
+            
+        # 在释放时检查是否有上传权限
+        if not self.main_window:
+            event.ignore()
+            return
+            
+        current_share = self.main_window.share_selector_combo.currentText()
+        if not current_share:
+            event.ignore()
+            self.main_window.add_log_message("请先选择一个共享文件夹", "⚠️")
+            return
+            
+        # 检查是否有权限上传
+        shares = self.main_window.active_peer_client.get_shares() if self.main_window.active_peer_client else []
+        has_upload_permission = False
+        for share in shares:
+            if share.get('name') == current_share and "upload" in share.get('permissions', []):
+                has_upload_permission = True
+                break
+                
+        if not has_upload_permission:
+            event.ignore()
+            self.main_window.add_log_message(f"您没有权限上传到 '{current_share}' 共享", "⚠️")
+            return
+            
+        # 接受事件
+        event.accept()
+        
+        # 处理上传
+        if self.main_window:
+            self.main_window.process_dropped_items(urls)
+            
+    def showDropOverlay(self):
+        """显示全屏拖拽覆盖层"""
+        if self.drop_overlay is None:
+            # 创建一个半透明的全屏覆盖层
+            self.drop_overlay = QLabel(self.viewport())
+            self.drop_overlay.setAlignment(Qt.AlignCenter)
+            self.drop_overlay.setText("拖放文件或文件夹到此处上传")
+            self.drop_overlay.setStyleSheet("""
+                background-color: rgba(200, 200, 255, 180);
+                border: 2px dashed #8080FF;
+                border-radius: 8px;
+                color: #404080;
+                font-size: 16px;
+                font-weight: bold;
+                padding: 20px;
+            """)
+        
+        # 确保覆盖层大小正确
+        self.drop_overlay.setGeometry(0, 0, self.viewport().width(), self.viewport().height())
+        self.drop_overlay.show()
+        self.drop_overlay.raise_()  # 确保覆盖层在最上层
+            
+    def hideDropOverlay(self):
+        """隐藏拖拽覆盖层"""
+        if self.drop_overlay is not None:
+            self.drop_overlay.hide()
+            
+    def resizeEvent(self, event):
+        """处理大小变化事件，调整拖拽覆盖层大小"""
+        super().resizeEvent(event)
+        if self.drop_overlay is not None and self.drop_overlay.isVisible():
+            self.drop_overlay.setGeometry(0, 0, self.viewport().width(), self.viewport().height())
 
 
 class MainWindow(QMainWindow):
@@ -744,7 +982,8 @@ class MainWindow(QMainWindow):
         toolbar_layout.addWidget(self.download_button)
         layout.addLayout(toolbar_layout)
 
-        self.file_table_widget = QTableWidget()
+        # 创建文件表格
+        self.file_table_widget = FileTableWidget(self)
         self.file_table_widget.setColumnCount(4)
         self.file_table_widget.setHorizontalHeaderLabels(["", "文件名", "类型", "大小"])
         self.file_table_widget.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -762,11 +1001,8 @@ class MainWindow(QMainWindow):
         self.file_table_widget.verticalHeader().setVisible(False)
         self.file_table_widget.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         
-        # 启用拖放功能
-        self.file_table_widget.setAcceptDrops(True)
-        self.file_table_widget.dragEnterEvent = self.dragEnterEvent
-        self.file_table_widget.dragMoveEvent = self.dragMoveEvent
-        self.file_table_widget.dropEvent = self.dropEvent
+        # 设置文件表格的主窗口引用和拖拽处理
+        self.file_table_widget.main_window = self
         
         layout.addWidget(self.file_table_widget)
         return page
@@ -1744,57 +1980,6 @@ class MainWindow(QMainWindow):
             item.setIcon(self.folder_icon)
             self.my_shares_list_widget.addItem(item)
 
-    def dragEnterEvent(self, event: QDragEnterEvent):
-        """处理拖拽进入事件"""
-        # 检查是否有上传权限
-        current_share = self.share_selector_combo.currentText()
-        if not current_share:
-            event.ignore()
-            return
-            
-        # 检查是否有权限上传
-        shares = self.active_peer_client.get_shares() if self.active_peer_client else []
-        has_upload_permission = False
-        for share in shares:
-            if share.get('name') == current_share and "upload" in share.get('permissions', []):
-                has_upload_permission = True
-                break
-                
-        if not has_upload_permission:
-            event.ignore()
-            return
-            
-        # 检查是否是文件或文件夹
-        if event.mimeData().hasUrls():
-            event.accept()
-        else:
-            event.ignore()
-            
-    def dragMoveEvent(self, event):
-        """处理拖拽移动事件"""
-        if event.mimeData().hasUrls():
-            event.accept()
-        else:
-            event.ignore()
-            
-    def dropEvent(self, event: QDropEvent):
-        """处理拖拽释放事件"""
-        if not event.mimeData().hasUrls():
-            event.ignore()
-            return
-            
-        # 获取所有拖拽的URL
-        urls = event.mimeData().urls()
-        if not urls:
-            event.ignore()
-            return
-            
-        # 接受事件
-        event.accept()
-        
-        # 处理上传
-        self.process_dropped_items(urls)
-        
     def process_dropped_items(self, urls):
         """处理拖拽的文件和文件夹"""
         if not self.active_peer_client:
