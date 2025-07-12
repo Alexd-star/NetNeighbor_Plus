@@ -659,12 +659,17 @@ class MainWindow(QMainWindow):
         upload_menu.addAction(upload_files_action)
         upload_menu.addAction(upload_folder_action)
         self.upload_button.setMenu(upload_menu)
+        
+        self.download_button = QPushButton(self.download_icon, "下载")
+        self.download_button.setToolTip("下载选中的文件或文件夹")
+        self.download_button.clicked.connect(self.handle_download_action)
 
         toolbar_layout.addWidget(self.share_selector_combo)
         toolbar_layout.addWidget(self.back_button)
         toolbar_layout.addWidget(QLabel("当前路径:"))
         toolbar_layout.addWidget(self.current_path_label, stretch=1)
         toolbar_layout.addWidget(self.upload_button)
+        toolbar_layout.addWidget(self.download_button)
         layout.addLayout(toolbar_layout)
 
         self.file_table_widget = QTableWidget()
@@ -1151,6 +1156,8 @@ class MainWindow(QMainWindow):
         self.file_table_widget.setRowCount(0)
         self.active_path_stack = []
         self.current_path_label.setText("/")
+        # 禁用下载按钮，因为没有活动的连接
+        self.download_button.setEnabled(False)
         self.right_stack.setCurrentWidget(self.welcome_page)
 
     def handle_device_click(self, clicked_item: QListWidgetItem, force_refresh: bool = False):
@@ -1260,6 +1267,8 @@ class MainWindow(QMainWindow):
 
         self.active_path_stack = []
         self.refresh_current_file_view()
+        # 更新下载按钮状态
+        QTimer.singleShot(100, self._update_download_button_state)
 
     def measure_ping(self, client: ApiClient, name: str):
         """在后台测量与远程设备的延迟。"""
@@ -1277,6 +1286,18 @@ class MainWindow(QMainWindow):
         self.file_table_widget.setRowCount(0)
         has_shares = self.share_selector_combo.count() > 0
         self.upload_button.setEnabled(has_shares)
+        
+        # 初始状态下禁用下载按钮，因为没有选中任何文件
+        self.download_button.setEnabled(False)
+        
+        # 检查当前共享是否有下载权限
+        current_share = self.share_selector_combo.currentText()
+        if current_share:
+            all_shares = load_config(force_reload=True).get('shares', [])
+            target_share = next((s for s in all_shares if s.get("name") == current_share), None)
+            if target_share and "download" not in target_share.get("permissions", []):
+                # 如果没有下载权限，始终禁用下载按钮
+                self.download_button.setEnabled(False)
 
         if files is None: return
 
@@ -1301,6 +1322,39 @@ class MainWindow(QMainWindow):
             self.file_table_widget.setItem(row, 1, name_item)
             self.file_table_widget.setItem(row, 2, type_item)
             self.file_table_widget.setItem(row, 3, size_item)
+            
+        # 添加文件选择变化的监听，以更新下载按钮状态
+        self.file_table_widget.itemSelectionChanged.connect(self._update_download_button_state)
+        self.file_table_widget.itemChanged.connect(self._update_download_button_state)
+        
+    def _update_download_button_state(self):
+        """更新下载按钮的启用状态，根据是否有选中的文件和当前共享的权限"""
+        # 检查当前共享是否有下载权限
+        current_share = self.share_selector_combo.currentText()
+        has_download_permission = False
+        
+        if current_share:
+            all_shares = load_config(force_reload=True).get('shares', [])
+            target_share = next((s for s in all_shares if s.get("name") == current_share), None)
+            if target_share:
+                has_download_permission = "download" in target_share.get("permissions", [])
+        
+        if not has_download_permission:
+            self.download_button.setEnabled(False)
+            return
+            
+        # 检查是否有选中的文件或勾选的文件
+        has_selected_items = len(self.file_table_widget.selectedItems()) > 0
+        
+        has_checked_items = False
+        for row in range(self.file_table_widget.rowCount()):
+            check_item = self.file_table_widget.item(row, 0)
+            if check_item and check_item.checkState() == Qt.CheckState.Checked:
+                has_checked_items = True
+                break
+                
+        # 如果有选中或勾选的文件，并且有下载权限，则启用下载按钮
+        self.download_button.setEnabled(has_download_permission and (has_selected_items or has_checked_items))
 
     def closeEvent(self, event):
         """处理窗口关闭事件，确保所有后台线程都安全退出。"""
@@ -1342,7 +1396,7 @@ class MainWindow(QMainWindow):
         # 1. 获取新项目的自然排序键
         new_item_key = natural_sort_key(display_name)
 
-        # 2. 遍历现有列表，找到第一个比新项目“大”的位置
+        # 2. 遍历现有列表，找到第一个比新项目"大"的位置
         insert_row = 0
         for i in range(self.device_list_widget.count()):
             existing_item = self.device_list_widget.item(i)
@@ -1529,7 +1583,7 @@ class MainWindow(QMainWindow):
 
         if not shares:
             # --- 【核心改进】: 为新用户提供清晰的引导 ---
-            item = QListWidgetItem("👉 请点击右侧“设置”按钮\n    添加您的第一个共享文件夹")
+            item = QListWidgetItem("👉 请点击右侧\"设置\"按钮\n    添加您的第一个共享文件夹")
             item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
             font = item.font()
             font.setItalic(True)
