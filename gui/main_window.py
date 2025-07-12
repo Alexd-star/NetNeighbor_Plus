@@ -867,6 +867,21 @@ class MainWindow(QMainWindow):
             elif event == "refresh_files" and self.active_peer_client:
                 if self.is_transfer_active:
                     return
+                    
+                # 检查是否有文件删除事件
+                deleted_files = data.get("deleted_files", [])
+                if deleted_files and source == 'local':
+                    # 处理本地文件被删除的情况
+                    for file_info in deleted_files:
+                        file_type = "文件夹" if file_info.get('is_directory') else "文件"
+                        share_name = file_info.get('share_name', '')
+                        path = file_info.get('path', '')
+                        if path:
+                            # 显示被删除的文件路径
+                            display_path = path if path != '.' else share_name
+                            self.add_log_message(f"警告: 对方已删除您共享的{file_type}: {display_path}", "🗑️")
+                
+                # 刷新文件列表
                 self.add_log_message("远程文件变更，延时刷新...", "🔄")
                 QTimer.singleShot(500, self.refresh_current_file_view)
             elif event == "shares_updated" and source == 'remote':
@@ -1139,10 +1154,53 @@ class MainWindow(QMainWindow):
     def refresh_current_file_view(self):
         """刷新当前的文件列表视图。"""
         if not self.active_peer_client or not self.share_selector_combo.currentText(): return
+        
+        current_share = self.share_selector_combo.currentText()
         current_path = "/" + "/".join(self.active_path_stack)
         self.current_path_label.setText(current_path)
         self.back_button.setEnabled(bool(self.active_path_stack))
-        files = self.active_peer_client.get_files(self.share_selector_combo.currentText(), current_path)
+        
+        # 获取当前共享的权限状态（刷新前）
+        previous_permissions = None
+        try:
+            shares = self.active_peer_client.get_shares()
+            if shares:
+                for share in shares:
+                    if share.get('name') == current_share:
+                        previous_permissions = set(share.get('permissions', []))
+                        break
+        except Exception:
+            pass
+        
+        # 获取文件列表
+        files = self.active_peer_client.get_files(current_share, current_path)
+        
+        # 如果获取文件列表失败，检查是否是权限问题
+        if files is None and previous_permissions is not None:
+            # 重新获取共享信息，检查权限是否变更
+            try:
+                shares = self.active_peer_client.get_shares()
+                if shares:
+                    for share in shares:
+                        if share.get('name') == current_share:
+                            current_permissions = set(share.get('permissions', []))
+                            removed_permissions = previous_permissions - current_permissions
+                            if removed_permissions:
+                                # 权限被移除，显示日志
+                                perm_names = {
+                                    'read': '读取',
+                                    'download': '下载',
+                                    'upload': '上传',
+                                    'delete': '删除',
+                                    'rename': '重命名'
+                                }
+                                removed_perm_names = [perm_names.get(p, p) for p in removed_permissions]
+                                self.add_log_message(f"警告: 对方已移除当前文件夹的 {', '.join(removed_perm_names)} 权限", "⚠️")
+                            break
+            except Exception:
+                pass
+        
+        # 更新文件表格
         self.update_file_table(files)
 
 

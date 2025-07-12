@@ -15,16 +15,30 @@ class DebouncedChangeHandler(FileSystemEventHandler):
         self.debounce_interval = debounce_interval
         self.last_triggered_time = 0
         self.timer = None
+        # 存储最近的删除事件
+        self.recent_delete_events = []
 
     def on_any_event(self, event):
         # 忽略目录自身的修改事件，只关心内容变化
         if event.is_directory:
             return
+            
+        # 检查是否是删除事件
+        if event.event_type == 'deleted':
+            # 记录删除事件
+            self.recent_delete_events.append({
+                'path': event.src_path,
+                'is_directory': event.is_directory,
+                'time': time.time()
+            })
 
         current_time = time.time()
         if current_time - self.last_triggered_time > self.debounce_interval:
             self.last_triggered_time = current_time
-            self.callback()
+            # 传递删除事件列表给回调函数
+            self.callback(self.recent_delete_events)
+            # 清空删除事件列表
+            self.recent_delete_events = []
 
 
 def start_file_watcher(paths_to_watch: list, change_callback, stop_event):
