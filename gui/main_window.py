@@ -359,55 +359,105 @@ class WorkerThread(QThread):
         
         # 计算文件夹总大小，用于进度显示
         total_size = 0
+        file_count = 0
         try:
             for root, dirs, files in os.walk(local_folder):
                 for file in files:
                     file_path = os.path.join(root, file)
                     if os.path.isfile(file_path):
                         total_size += os.path.getsize(file_path)
+                        file_count += 1
+                        
+                        # 每处理100个文件更新一次进度，避免大文件夹计算时间过长无反馈
+                        if file_count % 100 == 0:
+                            self.progress_text_update.emit(f"正在计算文件夹大小: 已扫描 {file_count} 个文件...")
         except Exception as e:
             print(f"计算文件夹大小时出错: {e}")
             # 如果无法计算大小，则使用0表示未知
             total_size = 0
             
-        # 【修复】添加进度更新，显示开始上传
-        self.progress_text_update.emit(f"开始上传文件夹: {folder_name}")
+        # 【优化】添加文件数量信息
+        self.progress_text_update.emit(f"开始上传文件夹: {folder_name} (共 {file_count} 个文件, {self._format_size(total_size)})")
         QThread.msleep(100)  # 短暂延迟，确保UI更新
             
         # 设置进度回调函数
         sent_bytes = 0
         last_update_time = time.time()
         bytes_since_last_update = 0
+        start_time = time.time()
         
         def progress_callback(chunk_len):
-            nonlocal sent_bytes, last_update_time, bytes_since_last_update
+            nonlocal sent_bytes, last_update_time, bytes_since_last_update, start_time
             sent_bytes += chunk_len
             bytes_since_last_update += chunk_len
             
             current_time = time.time()
             time_delta = current_time - last_update_time
             if time_delta >= 0.5:
+                # 计算速度
                 speed = bytes_since_last_update / time_delta
                 self.speed_update.emit(f"{self._format_size(speed)}/s")
+                
+                # 计算剩余时间
+                elapsed_time = current_time - start_time
+                if sent_bytes > 0 and total_size > 0:
+                    progress_percent = sent_bytes / total_size
+                    if progress_percent > 0:
+                        estimated_total_time = elapsed_time / progress_percent
+                        remaining_time = estimated_total_time - elapsed_time
+                        
+                        # 格式化剩余时间
+                        if remaining_time < 60:
+                            time_str = f"{int(remaining_time)}秒"
+                        elif remaining_time < 3600:
+                            time_str = f"{int(remaining_time / 60)}分钟{int(remaining_time % 60)}秒"
+                        else:
+                            time_str = f"{int(remaining_time / 3600)}小时{int((remaining_time % 3600) / 60)}分钟"
+                        
+                        # 更新进度文本，包含剩余时间
+                        self.progress_text_update.emit(
+                            f"上传文件夹: {folder_name} ({self._format_size(sent_bytes)}/{self._format_size(total_size)}, 剩余时间: {time_str})"
+                        )
+                
                 last_update_time = current_time
                 bytes_since_last_update = 0
             
             if total_size > 0:
                 self.progress.emit(int((sent_bytes / total_size) * 100))
-                self.progress_text_update.emit(
-                    f"上传文件夹: {folder_name} ({self._format_size(sent_bytes)}/{self._format_size(total_size)})"
-                )
         
         try:
+            # 【优化】添加tar包装开始提示
+            self.progress_text_update.emit(f"正在打包文件夹: {folder_name}")
+            
             # 使用TarUploader将文件夹打包并上传
             with TarUploader(local_folder, progress_callback=progress_callback) as uploader:
+                # 【优化】添加上传开始提示
+                self.progress_text_update.emit(f"开始传输文件夹: {folder_name}")
+                
+                # 上传前发送进度更新
+                self.progress.emit(0)
+                
+                # 执行上传
                 result = p_client.upload_folder_tar(s_name, base_dest, uploader, conflict_action)
             
             # 重置速度显示
             self.speed_update.emit("")
             
-            # 【修复】添加完成提示
-            self.progress_text_update.emit(f"文件夹 '{folder_name}' 上传完成")
+            # 【优化】添加完成提示，包含总上传大小和时间
+            total_time = time.time() - start_time
+            if total_time < 60:
+                time_str = f"{total_time:.1f}秒"
+            elif total_time < 3600:
+                time_str = f"{int(total_time / 60)}分钟{int(total_time % 60)}秒"
+            else:
+                time_str = f"{int(total_time / 3600)}小时{int((total_time % 3600) / 60)}分钟"
+                
+            self.progress_text_update.emit(
+                f"文件夹 '{folder_name}' 上传完成 ({self._format_size(total_size)}, 耗时: {time_str})"
+            )
+            
+            # 【优化】添加延迟，确保UI更新
+            QThread.msleep(100)
             
             # 根据上传结果显示不同的消息
             if result.get("action") == "renamed":
@@ -1377,28 +1427,47 @@ class MainWindow(QMainWindow):
             return
             
         if is_folder:
+            # 【优化】使用QFileDialog.getExistingDirectory前先更新状态栏
+            self.status_bar_label.setText("请选择要上传的文件夹...")
+            QApplication.processEvents()
+            
             folder_path = QFileDialog.getExistingDirectory(self, "选择要上传的文件夹", "")
             if not folder_path:
+                self.status_bar_label.setText("已取消上传")
                 return
                 
-            # 【修复】在启动上传前显示提示，避免UI卡顿时用户无反馈
+            # 【优化】在启动上传前显示更明确的提示，避免UI卡顿时用户无反馈
             self.status_bar_label.setText("正在准备上传文件夹，请稍候...")
+            self.add_log_message(f"正在准备上传文件夹: {os.path.basename(folder_path)}", "⏳")
             QApplication.processEvents()  # 立即更新UI
-                
-            folder_name = os.path.basename(folder_path)
-            dest_path = "/" + "/".join(self.active_path_stack)
-            task = {
-                "type": "upload_folder", 
-                "name": folder_name,
-                "local_path": folder_path, 
-                "peer_client": self.active_peer_client,
-                "share_name": current_share, 
-                "dest_path": dest_path,
-                "conflict_action": "ask"
-            }
             
-            # 启动工作线程
-            self.start_worker_thread("上传文件夹", [task])
+            # 【优化】使用单独线程计算文件夹大小，避免卡顿
+            def calculate_folder_size():
+                try:
+                    total_size = 0
+                    file_count = 0
+                    for root, dirs, files in os.walk(folder_path):
+                        for file in files:
+                            file_path = os.path.join(root, file)
+                            if os.path.isfile(file_path):
+                                total_size += os.path.getsize(file_path)
+                                file_count += 1
+                    
+                    # 在主线程中更新UI
+                    QTimer.singleShot(0, lambda: self.status_bar_label.setText(
+                        f"准备上传: {os.path.basename(folder_path)} ({file_count}个文件, {self._format_size(total_size)})"
+                    ))
+                    QTimer.singleShot(0, lambda: self.add_log_message(
+                        f"文件夹大小: {self._format_size(total_size)}, 包含{file_count}个文件", "📊"
+                    ))
+                except Exception as e:
+                    print(f"计算文件夹大小时出错: {e}")
+            
+            # 启动计算线程
+            threading.Thread(target=calculate_folder_size, daemon=True).start()
+            
+            # 延迟一小段时间后再启动上传，让用户看到准备信息
+            QTimer.singleShot(500, lambda: self._start_folder_upload(folder_path, current_share))
         else:
             file_paths, _ = QFileDialog.getOpenFileNames(self, "选择要上传的文件", "")
             if not file_paths:
@@ -1420,6 +1489,23 @@ class MainWindow(QMainWindow):
                 
             # 启动工作线程
             self.start_worker_thread("上传文件", tasks)
+            
+    def _start_folder_upload(self, folder_path, share_name):
+        """启动文件夹上传任务，从handle_upload_action分离出来以支持延迟启动"""
+        folder_name = os.path.basename(folder_path)
+        dest_path = "/" + "/".join(self.active_path_stack)
+        task = {
+            "type": "upload_folder", 
+            "name": folder_name,
+            "local_path": folder_path, 
+            "peer_client": self.active_peer_client,
+            "share_name": share_name, 
+            "dest_path": dest_path,
+            "conflict_action": "ask"
+        }
+        
+        # 启动工作线程
+        self.start_worker_thread("上传文件夹", [task])
 
     def handle_delete_action(self):
         """处理删除文件或文件夹的操作"""
@@ -1518,22 +1604,32 @@ class MainWindow(QMainWindow):
 
     def on_worker_all_finished(self):
         """当工作线程完成所有任务时调用的槽函数。"""
+        # 标记传输已完成
         self.is_transfer_active = False
-        if self.progress_dialog: self.progress_dialog.close()
         
-        # 【修复】先更新状态栏，避免卡顿
+        # 关闭进度对话框
+        if self.progress_dialog: 
+            self.progress_dialog.close()
+        
+        # 【优化】先更新状态栏，避免卡顿
         self.status_bar_label.setText("传输任务完成")
         self.add_log_message("所有传输任务已完成。", "🎉")
         QApplication.processEvents()  # 立即更新UI
         
-        # 刷新文件列表
-        self.refresh_current_file_view()
+        # 【优化】使用延迟刷新文件列表，避免卡顿
+        def delayed_refresh():
+            # 刷新文件列表
+            self.refresh_current_file_view()
+            
+            # 显示完成提示
+            if self.worker_thread and not self.worker_thread.has_errors:
+                QMessageBox.information(self, "任务完成", "所有传输任务已成功完成。", QMessageBox.Ok)
+            
+            # 清理工作线程引用
+            self.worker_thread = None
         
-        # 显示完成提示
-        if self.worker_thread and not self.worker_thread.has_errors:
-            QMessageBox.information(self, "任务完成", "所有传输任务已成功完成。", QMessageBox.Ok)
-        
-        self.worker_thread = None
+        # 使用QTimer延迟执行刷新和显示完成对话框，让UI有时间更新
+        QTimer.singleShot(500, delayed_refresh)
 
     def on_worker_error(self, error_message: str):
         """当工作线程发生错误时调用的槽函数。"""

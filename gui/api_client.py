@@ -7,6 +7,7 @@ import socket
 import tarfile
 import io
 from typing import Optional, Callable, Union
+import threading
 
 
 # ------------------- 新增的 TCP 下载器类 -------------------
@@ -66,6 +67,7 @@ class TarUploader:
     """
     一个实现了文件夹打包为tar流的上传器。
     它负责将整个文件夹打包为tar格式，并提供流式读取接口。
+    【优化】使用更高效的流式处理，避免一次性加载整个文件夹到内存
     """
     def __init__(
             self,
@@ -78,13 +80,10 @@ class TarUploader:
         self.chunk_size = chunk_size
         self.total_size = self._calculate_total_size()
         
-        # 创建内存缓冲区用于tar流
-        self.buffer = io.BytesIO()
-        self.tar_file = None
-        self._prepare_tar()
-        
-        # 重置缓冲区位置以便读取
-        self.buffer.seek(0)
+        # 创建管道用于流式处理
+        self.read_pipe, self.write_pipe = os.pipe()
+        self.tar_thread = None
+        self._start_tar_thread()
     
     def _calculate_total_size(self):
         """计算文件夹中所有文件的总大小"""
@@ -96,43 +95,65 @@ class TarUploader:
                     total += os.path.getsize(file_path)
         return total
     
-    def _prepare_tar(self):
-        """将文件夹打包为tar格式到内存缓冲区"""
-        self.tar_file = tarfile.open(
-            fileobj=self.buffer,
-            mode='w',
-            format=tarfile.GNU_FORMAT
-        )
-        
-        # 添加文件夹到tar
-        folder_name = os.path.basename(self.folder_path)
-        self.tar_file.add(
-            self.folder_path, 
-            arcname=folder_name,
-            recursive=True
-        )
-        
-        # 关闭tar文件以完成写入
-        self.tar_file.close()
+    def _start_tar_thread(self):
+        """在后台线程中启动tar打包过程"""
+        def tar_worker():
+            try:
+                with os.fdopen(self.write_pipe, 'wb') as write_pipe:
+                    with tarfile.open(
+                        fileobj=write_pipe,
+                        mode='w|',
+                        format=tarfile.GNU_FORMAT
+                    ) as tar:
+                        # 添加文件夹到tar
+                        folder_name = os.path.basename(self.folder_path)
+                        tar.add(
+                            self.folder_path, 
+                            arcname=folder_name,
+                            recursive=True
+                        )
+            except Exception as e:
+                print(f"Tar打包过程出错: {e}")
+                
+        # 启动打包线程
+        self.tar_thread = threading.Thread(target=tar_worker)
+        self.tar_thread.daemon = True
+        self.tar_thread.start()
     
     def read(self, size: int = -1) -> bytes:
         """读取指定大小的数据块"""
-        chunk = self.buffer.read(self.chunk_size if size <= 0 else size)
-        if self.progress_callback and chunk:
-            self.progress_callback(len(chunk))
-        return chunk
+        try:
+            # 从管道读取数据
+            chunk = os.read(self.read_pipe, self.chunk_size if size <= 0 else size)
+            if self.progress_callback and chunk:
+                self.progress_callback(len(chunk))
+            return chunk
+        except Exception as e:
+            print(f"读取tar数据时出错: {e}")
+            return b''
     
     def __len__(self):
-        """返回tar文件的总大小"""
-        return len(self.buffer.getvalue())
+        """返回tar文件的总大小（估计值）"""
+        # 由于流式处理，无法精确知道tar的大小，返回原始文件大小的估计值
+        # tar格式会有一些额外的头信息，所以增加10%作为估计
+        return int(self.total_size * 1.1)
     
     def __enter__(self):
         return self
     
     def __exit__(self, exc_type, exc_val, exc_tb):
         """确保资源被正确释放"""
-        if self.buffer:
-            self.buffer.close()
+        try:
+            # 关闭读取管道
+            if hasattr(self, 'read_pipe') and self.read_pipe is not None:
+                os.close(self.read_pipe)
+                self.read_pipe = None
+                
+            # 等待tar线程完成
+            if self.tar_thread and self.tar_thread.is_alive():
+                self.tar_thread.join(1.0)  # 等待最多1秒
+        except Exception as e:
+            print(f"关闭TarUploader资源时出错: {e}")
 
 
 # ------------------- UploadStreamer (无需改动) -------------------
