@@ -4,6 +4,8 @@ import os
 import httpx
 import json
 import socket
+import tarfile
+import io
 from typing import Optional, Callable, Union
 
 
@@ -59,6 +61,80 @@ class TcpDownloader:
             self.sock.close()
 
 
+# ------------------- 新增的 Tar 上传器类 -------------------
+class TarUploader:
+    """
+    一个实现了文件夹打包为tar流的上传器。
+    它负责将整个文件夹打包为tar格式，并提供流式读取接口。
+    """
+    def __init__(
+            self,
+            folder_path: str,
+            progress_callback: Optional[Callable[[int], None]] = None,
+            chunk_size: int = 65536  # 64KB
+    ):
+        self.folder_path = folder_path
+        self.progress_callback = progress_callback
+        self.chunk_size = chunk_size
+        self.total_size = self._calculate_total_size()
+        
+        # 创建内存缓冲区用于tar流
+        self.buffer = io.BytesIO()
+        self.tar_file = None
+        self._prepare_tar()
+        
+        # 重置缓冲区位置以便读取
+        self.buffer.seek(0)
+    
+    def _calculate_total_size(self):
+        """计算文件夹中所有文件的总大小"""
+        total = 0
+        for root, _, files in os.walk(self.folder_path):
+            for file in files:
+                file_path = os.path.join(root, file)
+                if os.path.isfile(file_path):
+                    total += os.path.getsize(file_path)
+        return total
+    
+    def _prepare_tar(self):
+        """将文件夹打包为tar格式到内存缓冲区"""
+        self.tar_file = tarfile.open(
+            fileobj=self.buffer,
+            mode='w',
+            format=tarfile.GNU_FORMAT
+        )
+        
+        # 添加文件夹到tar
+        folder_name = os.path.basename(self.folder_path)
+        self.tar_file.add(
+            self.folder_path, 
+            arcname=folder_name,
+            recursive=True
+        )
+        
+        # 关闭tar文件以完成写入
+        self.tar_file.close()
+    
+    def read(self, size: int = -1) -> bytes:
+        """读取指定大小的数据块"""
+        chunk = self.buffer.read(self.chunk_size if size <= 0 else size)
+        if self.progress_callback and chunk:
+            self.progress_callback(len(chunk))
+        return chunk
+    
+    def __len__(self):
+        """返回tar文件的总大小"""
+        return len(self.buffer.getvalue())
+    
+    def __enter__(self):
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """确保资源被正确释放"""
+        if self.buffer:
+            self.buffer.close()
+
+
 # ------------------- UploadStreamer (无需改动) -------------------
 class UploadStreamer:
     # ... 此类代码保持不变 ...
@@ -90,40 +166,12 @@ class UploadStreamer:
         self.file.close()
 
 
-# ------------------- ApiClient (修改 download_folder_tcp) -------------------
 class ApiClient:
-    """用于与后端API交互的客户端。"""
+    """API客户端，负责与远程API通信。"""
 
     def __init__(self, base_url: str):
         self.base_url = base_url
-        self.client = httpx.Client(timeout=5.0)
-
-    # ... get_ping, get_peers, get_shares 等函数保持不变 ...
-
-    def notify_shares_changed(self):
-        try:
-            response = self.client.post(f"{self.base_url}/api/v1/internal/notify_shares_changed", timeout=5.0)
-            response.raise_for_status()
-            return True
-        except (httpx.RequestError, httpx.HTTPStatusError) as e:
-            print(f"Error notifying peers of share change: {e}")
-            return False
-
-    def get_ping(self) -> bool:
-        try:
-            response = self.client.get(f"{self.base_url}/api/v1/ping", timeout=2.0)
-            return response.status_code == 200
-        except (httpx.RequestError, httpx.HTTPStatusError):
-            return False
-
-    def get_peers(self) -> Optional[dict]:
-        try:
-            response = self.client.get(f"{self.base_url}/api/v1/peers", timeout=5.0)
-            response.raise_for_status()
-            return response.json()
-        except (httpx.RequestError, httpx.HTTPStatusError) as e:
-            print(f"错误: 请求设备列表失败 - {e}")
-            return None
+        self.client = httpx.Client(timeout=None)
 
     def get_shares(self) -> Optional[list]:
         try:
@@ -133,6 +181,26 @@ class ApiClient:
         except (httpx.RequestError, httpx.HTTPStatusError) as e:
             print(f"错误: 请求共享列表失败 - {e}")
             return None
+
+    def get_peers(self) -> Optional[dict]:
+        try:
+            response = self.client.get(f"{self.base_url}/api/v1/peers", timeout=5.0)
+            response.raise_for_status()
+            return response.json()
+        except (httpx.RequestError, httpx.HTTPStatusError) as e:
+            print(f"错误: 请求设备列表失败 - {e}")
+            return None
+            
+    # 【修复】添加get_ping方法，用于测量延迟
+    def get_ping(self) -> bool:
+        """发送ping请求，用于测量延迟"""
+        try:
+            response = self.client.get(f"{self.base_url}/api/v1/ping", timeout=3.0)
+            response.raise_for_status()
+            return True
+        except Exception as e:
+            print(f"Ping失败: {e}")
+            return False
 
     def get_files(self, share_name: str, path: str = "/") -> Optional[list]:
         try:
@@ -144,6 +212,45 @@ class ApiClient:
         except (httpx.RequestError, httpx.HTTPStatusError) as e:
             print(f"错误: 请求文件列表'{share_name}{path}'失败 - {e}")
             return None
+            
+    # 【修复】添加delete_file方法，用于删除文件或文件夹
+    def delete_file(self, share_name: str, file_path: str) -> bool:
+        """删除远程文件或文件夹"""
+        try:
+            url = f"{self.base_url}/api/v1/delete/{share_name}"
+            params = {"file_path": file_path}
+            response = self.client.delete(url, params=params, timeout=10.0)
+            response.raise_for_status()
+            return True
+        except Exception as e:
+            print(f"删除文件失败: {e}")
+            return False
+            
+    # 【修复】添加rename_file方法，用于重命名文件或文件夹
+    def rename_file(self, share_name: str, file_path: str, new_name: str) -> bool:
+        """重命名远程文件或文件夹"""
+        try:
+            url = f"{self.base_url}/api/v1/rename/{share_name}"
+            params = {"file_path": file_path, "new_name": new_name}
+            response = self.client.post(url, params=params, timeout=5.0)
+            response.raise_for_status()
+            return True
+        except Exception as e:
+            print(f"重命名文件失败: {e}")
+            return False
+            
+    # 【修复】添加check_folder_exists方法，用于检查文件夹是否存在
+    def check_folder_exists(self, share_name: str, dest_path: str, folder_name: str) -> bool:
+        """检查远程目录中是否已存在同名文件夹"""
+        try:
+            # 构建完整路径
+            full_path = f"{dest_path}/{folder_name}".replace('//', '/')
+            # 尝试获取该路径的文件列表，如果成功则说明文件夹存在
+            files = self.get_files(share_name, full_path)
+            return files is not None
+        except Exception as e:
+            print(f"检查文件夹是否存在时出错: {e}")
+            return False
 
     def download_file_stream(self, share_name: str, file_path: str):
         url = f"{self.base_url}/api/v1/download/{share_name}"
@@ -172,37 +279,29 @@ class ApiClient:
             return response.json().get("exists", False)
         except Exception:
             return False
-
-    def create_directory(self, share_name: str, path: str):
+            
+    def create_directory(self, share_name: str, path: str) -> bool:
+        """在远程创建目录"""
         url = f"{self.base_url}/api/v1/create_dir/{share_name}"
         params = {"path": path}
-        response = self.client.post(url, params=params, timeout=5.0)
-        response.raise_for_status()
-        return response.json()
-        
-    def delete_file(self, share_name: str, file_path: str):
-        """删除文件或文件夹"""
         try:
-            url = f"{self.base_url}/api/v1/delete/{share_name}"
-            params = {"file_path": file_path}
-            response = self.client.delete(url, params=params, timeout=5.0)
+            response = self.client.post(url, params=params, timeout=5.0)
             response.raise_for_status()
-            return response.json()
-        except (httpx.RequestError, httpx.HTTPStatusError) as e:
-            print(f"错误: 删除文件 '{file_path}' 失败 - {e}")
-            return None
+            return True
+        except Exception as e:
+            print(f"创建目录失败: {e}")
+            return False
             
-    def rename_file(self, share_name: str, file_path: str, new_name: str):
-        """重命名文件或文件夹"""
+    def notify_shares_changed(self) -> bool:
+        """通知服务器共享配置已更改"""
         try:
-            url = f"{self.base_url}/api/v1/rename/{share_name}"
-            params = {"file_path": file_path, "new_name": new_name}
-            response = self.client.put(url, params=params, timeout=5.0)
+            url = f"{self.base_url}/api/v1/notify_shares_changed"
+            response = self.client.post(url, timeout=5.0)
             response.raise_for_status()
-            return response.json()
-        except (httpx.RequestError, httpx.HTTPStatusError) as e:
-            print(f"错误: 重命名文件 '{file_path}' 失败 - {e}")
-            return None
+            return True
+        except Exception as e:
+            print(f"通知共享变更失败: {e}")
+            return False
 
     def download_folder_tcp(self, share_name: str, remote_path: str) -> TcpDownloader:
         """
@@ -230,3 +329,16 @@ class ApiClient:
 
         # 返回一个全新的、管理着TCP连接的下载器对象
         return TcpDownloader(host, tcp_port, request_header)
+        
+    def upload_folder_tar(self, share_name: str, dest_path: str, uploader: TarUploader, conflict_action: str = "overwrite"):
+        """通过tar流式上传整个文件夹"""
+        url = f"{self.base_url}/api/v1/upload_folder_tar/{share_name}"
+        params = {"dest_path": dest_path, "conflict_action": conflict_action}
+        
+        # 使用文件夹名称作为tar文件名
+        folder_name = os.path.basename(uploader.folder_path)
+        files = {'file': (f"{folder_name}.tar", uploader, 'application/x-tar')}
+        
+        response = self.client.post(url, params=params, files=files, timeout=None)
+        response.raise_for_status()
+        return response.json()

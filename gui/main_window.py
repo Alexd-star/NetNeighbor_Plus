@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
     QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget, QComboBox, QCheckBox
 )
 
-from .api_client import ApiClient, UploadStreamer
+from .api_client import ApiClient, UploadStreamer, TarUploader
 from .app_controller import AppController
 from .settings_window import SettingsWindow
 from core.config_loader import get_config, load_config, CONFIG_PATH
@@ -165,6 +165,17 @@ class WorkerThread(QThread):
         self._is_running = True
         self.conflict_resolution_result = None
         self.conflict_resolution_event = threading.Event()
+        
+    def _format_size(self, size_bytes):
+        """格式化文件大小为人类可读的形式"""
+        if size_bytes < 1024:
+            return f"{size_bytes} B"
+        elif size_bytes < 1024 * 1024:
+            return f"{size_bytes/1024:.1f} KB"
+        elif size_bytes < 1024 * 1024 * 1024:
+            return f"{size_bytes/(1024*1024):.1f} MB"
+        else:
+            return f"{size_bytes/(1024*1024*1024):.2f} GB"
 
     def run(self):
         """线程主执行函数, 按顺序处理任务列表。"""
@@ -206,43 +217,35 @@ class WorkerThread(QThread):
         self._is_running = False
 
     # --- 【优化2】重构传输函数以包含速度计算逻辑 ---
-    def _transfer_loop(self, iterator, file_handle, total_size):
-        """通用的传输循环, 包含进度、速度计算和超详细的日志。"""
-        start_time = time.time()
-        last_update_time = start_time
+    def _transfer_loop(self, source_iterator, dest_file, total_size):
+        """
+        通用的数据传输循环，用于文件下载和上传。
+        处理进度更新和速度计算。
+        """
+        received = 0
+        last_update_time = time.time()
         bytes_since_last_update = 0
-        transferred_bytes = 0
-        chunk_count = 0
 
-        print(f"[CLIENT] 开始文件传输循环。预计总大小: {total_size} 字节。")
-
-        for chunk in iterator:
+        for chunk in source_iterator:
             if not self._is_running:
-                print("[CLIENT] 传输被用户取消。")
-                raise InterruptedError("Transfer cancelled by user")
-
-            chunk_len = len(chunk)
-            chunk_count += 1
-
-            file_handle.write(chunk)
-
-            transferred_bytes += chunk_len
-            bytes_since_last_update += chunk_len
-
+                raise InterruptedError("Transfer cancelled")
+                
+            dest_file.write(chunk)
+            chunk_size = len(chunk)
+            received += chunk_size
+            bytes_since_last_update += chunk_size
+            
+            # 更新速度显示（每0.5秒更新一次）
             current_time = time.time()
-            time_delta = current_time - last_update_time
-
-            if time_delta >= 0.5:
-                speed = bytes_since_last_update / time_delta
+            if current_time - last_update_time >= 0.5:
+                speed = bytes_since_last_update / (current_time - last_update_time)
                 self.speed_update.emit(f"{self._format_size(speed)}/s")
                 last_update_time = current_time
                 bytes_since_last_update = 0
 
+            # 更新进度条（如果知道总大小）
             if total_size > 0:
-                self.progress.emit(int((transferred_bytes / total_size) * 100))
-
-        print(f"[CLIENT] 传输循环正常结束。总共接收 {chunk_count} 个数据块，总大小: {transferred_bytes} 字节。")
-        self.speed_update.emit("")
+                self.progress.emit(int((received / total_size) * 100))
 
     def _run_download_file(self, task_info):
         """下载单个文件的具体实现。"""
@@ -287,169 +290,138 @@ class WorkerThread(QThread):
         )
 
     def _run_upload_folder(self, task_info):
-        """上传整个文件夹的具体实现。"""
-        local_folder, p_client = task_info['local_path'], task_info['peer_client']
-        s_name, base_dest = task_info['share_name'], task_info['dest_path']
-        folder_name = os.path.basename(local_folder)
-        conflict_action = task_info.get('conflict_action', 'ask')  # 默认询问用户
-
-        # 检查文件夹是否已存在，如果是ask模式，先询问用户
-        root_remote_path = os.path.join(base_dest, folder_name).replace('\\', '/')
+        """上传文件夹的具体实现，支持冲突处理。"""
+        local_folder = task_info['local_path']
+        p_client = task_info['peer_client']
+        s_name = task_info['share_name']
+        base_dest = task_info['dest_path']
+        folder_name = task_info['name']
+        conflict_action = task_info.get('conflict_action', 'ask')
         
-        # 尝试获取远程文件夹内容，如果成功则说明文件夹存在
-        folder_exists = False
-        try:
-            files = p_client.get_files(s_name, root_remote_path)
-            folder_exists = files is not None
-        except Exception:
+        # 【修复】添加进度文本更新，让用户知道当前状态
+        self.progress_text_update.emit(f"正在准备上传文件夹: {folder_name}")
+        
+        # 检查文件夹是否已存在
+        if conflict_action == 'ask':
             folder_exists = False
-            
-        # 如果文件夹存在且需要询问用户
-        if folder_exists and conflict_action == 'ask':
-            # 使用新的冲突解决机制
-            file_info = {
-                'file_name': folder_name,
-                'is_folder': True
-            }
-            
-            # 创建事件对象用于线程同步
-            event = threading.Event()
-            
-            # 发射信号请求主线程处理冲突
-            self.conflict_resolution_needed.emit(file_info, event)
-            
-            # 等待主线程处理完成
-            event.wait()
-            
-            # 获取处理结果
-            conflict_result = self.conflict_resolution_result
-            
-            # 重置结果
-            self.conflict_resolution_result = None
-            
-            # 根据用户选择设置冲突处理方式
-            if not conflict_result:
-                # 用户取消了对话框
-                return
+            try:
+                # 【修复】使用安全的方式检查文件夹是否存在
+                folder_exists = p_client.check_folder_exists(s_name, base_dest, folder_name)
+            except Exception as e:
+                print(f"检查文件夹是否存在时出错: {e}")
+                # 如果检查失败，尝试使用备用方法检查
+                try:
+                    # 构建完整路径
+                    full_path = f"{base_dest}/{folder_name}".replace('//', '/')
+                    # 尝试获取该路径的文件列表，如果成功则说明文件夹存在
+                    files = p_client.get_files(s_name, full_path)
+                    folder_exists = files is not None
+                except Exception:
+                    # 如果两种方法都失败，假设文件夹不存在
+                    folder_exists = False
                 
-            conflict_action = conflict_result.get("action", "skip")
-            
-            # 如果用户选择跳过，直接返回
-            if conflict_action == "skip":
-                self.file_finished.emit(f"已跳过上传: {folder_name}")
-                return
-                
-            # 如果用户选择重命名
-            if conflict_action == "rename":
-                # 生成新名称
-                counter = 1
-                new_folder_name = f"{folder_name} ({counter})"
-                new_remote_path = os.path.join(base_dest, new_folder_name).replace('\\', '/')
-                
-                # 检查新名称是否存在，如果存在则增加计数
-                while True:
-                    try:
-                        files = p_client.get_files(s_name, new_remote_path)
-                        if files is None:
-                            break
-                        counter += 1
-                        new_folder_name = f"{folder_name} ({counter})"
-                        new_remote_path = os.path.join(base_dest, new_folder_name).replace('\\', '/')
-                    except Exception:
-                        break
-                
-                # 更新文件夹路径
-                folder_name = new_folder_name
-                root_remote_path = new_remote_path
-                self.file_finished.emit(f"文件夹已重命名为: {folder_name}")
-        
-        try:
-            # 创建远程文件夹（如果是merge模式，这个操作可能是多余的，但不会有害）
-            p_client.create_directory(s_name, root_remote_path)
-            
-            # 不再为每个目录创建发送消息，而是在开始时发送一条消息
-            self.file_finished.emit(f"开始上传文件夹: {folder_name}")
-    
-            # 首先收集所有需要上传的文件和创建的目录
-            files_to_upload = []
-            dirs_to_create = []
-            
-            for root, dirs, files in os.walk(local_folder):
-                if not self._is_running:
-                    raise InterruptedError("Upload cancelled")
-    
-                rel_path = os.path.relpath(root, local_folder)
-                for d in dirs:
-                    remote_dir = os.path.join(root_remote_path, rel_path, d)
-                    dirs_to_create.append(remote_dir.replace('\\', '/'))
-    
-                for f in files:
-                    remote_folder = os.path.join(root_remote_path, rel_path)
-                    files_to_upload.append({
-                        'local_file': os.path.join(root, f),
-                        'remote_dest': remote_folder.replace('\\', '/'),
-                        'name': f
-                    })
-                    
-            # 创建所有目录
-            for remote_dir in dirs_to_create:
-                p_client.create_directory(s_name, remote_dir)
-                
-            # 如果没有文件要上传，直接返回
-            if not files_to_upload:
-                self.file_finished.emit(f"文件夹 '{folder_name}' 上传完成（空文件夹）")
-                return
-                
-            # 计算总大小，用于进度条
-            total_size = sum(os.path.getsize(file_info['local_file']) for file_info in files_to_upload)
-            uploaded_size = 0
-            processed_files = 0
-            
-            # 上传所有文件
-            total_files = len(files_to_upload)
-            for i, file_task in enumerate(files_to_upload):
-                if not self._is_running:
-                    raise InterruptedError("Upload cancelled")
-                    
-                # 更新进度文本，显示当前处理的文件和总体进度
-                self.progress_text_update.emit(
-                    f"上传文件夹: {folder_name} ({i + 1}/{total_files})"
-                )
-                
-                local_file = file_task['local_file']
-                file_size = os.path.getsize(local_file)
-                
-                # 创建上传任务但不显示每个文件的完成消息
-                upload_task = {
-                    "type": "upload_file_silent",  # 使用新的类型标记，避免显示消息
-                    "local_path": local_file,
-                    "peer_client": p_client,
-                    "share_name": s_name,
-                    "dest_path": file_task['remote_dest'],
-                    "conflict_action": conflict_action if conflict_action != "merge" else "ask"  # 如果是合并模式，对单个文件仍需询问
+            if folder_exists:
+                # 使用冲突解决机制
+                file_info = {
+                    'file_name': folder_name,
+                    'is_folder': True
                 }
                 
-                # 使用修改后的上传方法
-                try:
-                    # 直接调用上传逻辑，但不发送完成消息
-                    result = self._run_upload_file_internal(upload_task)
+                # 创建事件对象用于线程同步
+                event = threading.Event()
+                
+                # 发射信号请求主线程处理冲突
+                self.conflict_resolution_needed.emit(file_info, event)
+                
+                # 等待主线程处理完成
+                event.wait()
+                
+                # 获取处理结果
+                conflict_result = self.conflict_resolution_result
+                
+                # 重置结果
+                self.conflict_resolution_result = None
+                
+                # 根据用户选择设置冲突处理方式
+                if conflict_result.get("action") == "cancelled":
+                    # 用户取消了对话框
+                    return
                     
-                    # 更新已上传大小和文件计数
-                    uploaded_size += file_size
-                    processed_files += 1
-                    
-                    # 更新总体进度
-                    if total_size > 0:
-                        progress_percent = int((uploaded_size / total_size) * 100)
-                        self.progress.emit(progress_percent)
-                        
-                except Exception as e:
-                    # 记录错误但继续上传其他文件
-                    print(f"上传文件 {file_task['name']} 时出错: {e}")
-                    
-            # 所有文件上传完成后，发送一条总结消息
-            self.file_finished.emit(f"文件夹 '{folder_name}' 上传完成 ({processed_files}/{total_files} 个文件)")
+                conflict_action = conflict_result.get("action", "skip")
+        
+        # 如果用户选择跳过，则直接返回
+        if conflict_action == 'skip':
+            self.file_finished.emit(f"已跳过上传: {folder_name}")
+            return
+            
+        # 【修复】添加进度更新，计算总大小
+        self.progress_text_update.emit(f"正在计算文件夹大小: {folder_name}")
+        
+        # 计算文件夹总大小，用于进度显示
+        total_size = 0
+        try:
+            for root, dirs, files in os.walk(local_folder):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    if os.path.isfile(file_path):
+                        total_size += os.path.getsize(file_path)
         except Exception as e:
+            print(f"计算文件夹大小时出错: {e}")
+            # 如果无法计算大小，则使用0表示未知
+            total_size = 0
+            
+        # 【修复】添加进度更新，显示开始上传
+        self.progress_text_update.emit(f"开始上传文件夹: {folder_name}")
+        QThread.msleep(100)  # 短暂延迟，确保UI更新
+            
+        # 设置进度回调函数
+        sent_bytes = 0
+        last_update_time = time.time()
+        bytes_since_last_update = 0
+        
+        def progress_callback(chunk_len):
+            nonlocal sent_bytes, last_update_time, bytes_since_last_update
+            sent_bytes += chunk_len
+            bytes_since_last_update += chunk_len
+            
+            current_time = time.time()
+            time_delta = current_time - last_update_time
+            if time_delta >= 0.5:
+                speed = bytes_since_last_update / time_delta
+                self.speed_update.emit(f"{self._format_size(speed)}/s")
+                last_update_time = current_time
+                bytes_since_last_update = 0
+            
+            if total_size > 0:
+                self.progress.emit(int((sent_bytes / total_size) * 100))
+                self.progress_text_update.emit(
+                    f"上传文件夹: {folder_name} ({self._format_size(sent_bytes)}/{self._format_size(total_size)})"
+                )
+        
+        try:
+            # 使用TarUploader将文件夹打包并上传
+            with TarUploader(local_folder, progress_callback=progress_callback) as uploader:
+                result = p_client.upload_folder_tar(s_name, base_dest, uploader, conflict_action)
+            
+            # 重置速度显示
+            self.speed_update.emit("")
+            
+            # 【修复】添加完成提示
+            self.progress_text_update.emit(f"文件夹 '{folder_name}' 上传完成")
+            
+            # 根据上传结果显示不同的消息
+            if result.get("action") == "renamed":
+                new_folder_name = result.get("folder_name", folder_name)
+                self.file_finished.emit(f"文件夹 '{folder_name}' 已重命名为 '{new_folder_name}' 并上传成功。")
+            elif result.get("action") == "skipped":
+                self.file_finished.emit(f"已跳过上传: {folder_name}")
+            elif result.get("action") == "merge":
+                self.file_finished.emit(f"文件夹 '{folder_name}' 已合并上传成功。")
+            else:
+                self.file_finished.emit(f"文件夹 '{folder_name}' 上传成功。")
+        except Exception as e:
+            # 捕获上传过程中的异常
+            self.progress_text_update.emit(f"上传文件夹时出错: {e}")
             raise Exception(f"上传文件夹时出错: {e}")
 
     def _run_upload_file_internal(self, task_info):
@@ -537,9 +509,8 @@ class WorkerThread(QThread):
         try:
             with UploadStreamer(local_path, progress_callback=progress_callback) as uploader:
                 result = p_client.upload_file_stream(s_name, dest, uploader, conflict_action)
-    
+
             self.speed_update.emit("")
-            
             # 返回上传结果
             return result
         except Exception as e:
@@ -894,6 +865,10 @@ class MainWindow(QMainWindow):
         self.populate_initial_devices()
         # 启动设备同步定时器
         self.device_sync_timer.start()
+        
+        # 【修复】添加初始化完成的提示，更新状态栏
+        self.status_bar_label.setText("初始化完成，系统就绪")
+        self.add_log_message("系统初始化完成", "✅")
 
     def _get_my_ip(self) -> str:
         """获取本机的局域网IP地址。"""
@@ -1389,33 +1364,62 @@ class MainWindow(QMainWindow):
             self.start_worker_thread("下载任务", tasks)
 
     def handle_upload_action(self, is_folder: bool):
-        """处理上传菜单的点击事件。"""
-        dest_path = "/".join(self.active_path_stack)
-
+        """处理上传文件或文件夹的操作。"""
+        if not self.active_peer_client or not self.share_selector_combo.currentText():
+            return
+        
+        # 获取当前共享的权限
+        current_share = self.share_selector_combo.currentText()
+        all_shares = load_config(force_reload=True).get('shares', [])
+        target_share = next((s for s in all_shares if s.get("name") == current_share), None)
+        if not target_share or "upload" not in target_share.get("permissions", []):
+            QMessageBox.warning(self, "权限不足", "对方未授予上传权限。", QMessageBox.Ok)
+            return
+            
         if is_folder:
-            local_path = QFileDialog.getExistingDirectory(self, "选择要上传的文件夹")
-            if not local_path: return
+            folder_path = QFileDialog.getExistingDirectory(self, "选择要上传的文件夹", "")
+            if not folder_path:
+                return
+                
+            # 【修复】在启动上传前显示提示，避免UI卡顿时用户无反馈
+            self.status_bar_label.setText("正在准备上传文件夹，请稍候...")
+            QApplication.processEvents()  # 立即更新UI
+                
+            folder_name = os.path.basename(folder_path)
+            dest_path = "/" + "/".join(self.active_path_stack)
             task = {
-                "type": "upload_folder", "name": os.path.basename(local_path),
-                "local_path": local_path, "peer_client": self.active_peer_client,
-                "share_name": self.share_selector_combo.currentText(), "dest_path": dest_path,
-                "conflict_action": "ask"  # 添加冲突处理选项
+                "type": "upload_folder", 
+                "name": folder_name,
+                "local_path": folder_path, 
+                "peer_client": self.active_peer_client,
+                "share_name": current_share, 
+                "dest_path": dest_path,
+                "conflict_action": "ask"
             }
-            self.start_worker_thread(f"正在上传文件夹: {task['name']}", [task])
-
+            
+            # 启动工作线程
+            self.start_worker_thread("上传文件夹", [task])
         else:
-            local_files, _ = QFileDialog.getOpenFileNames(self, "选择要上传的文件 (可多选)")
-            if not local_files: return
+            file_paths, _ = QFileDialog.getOpenFileNames(self, "选择要上传的文件", "")
+            if not file_paths:
+                return
+                
             tasks = []
-            for file_path in local_files:
-                tasks.append({
-                    "type": "upload_file", "name": os.path.basename(file_path),
-                    "local_path": file_path, "peer_client": self.active_peer_client,
-                    "share_name": self.share_selector_combo.currentText(), "dest_path": dest_path,
-                    "conflict_action": "ask"  # 添加冲突处理选项
-                })
-            if tasks:
-                self.start_worker_thread("正在上传文件...", tasks)
+            dest_path = "/" + "/".join(self.active_path_stack)
+            for file_path in file_paths:
+                task = {
+                    "type": "upload_file", 
+                    "name": os.path.basename(file_path),
+                    "local_path": file_path, 
+                    "peer_client": self.active_peer_client,
+                    "share_name": current_share, 
+                    "dest_path": dest_path,
+                    "conflict_action": "ask"
+                }
+                tasks.append(task)
+                
+            # 启动工作线程
+            self.start_worker_thread("上传文件", tasks)
 
     def handle_delete_action(self):
         """处理删除文件或文件夹的操作"""
@@ -1434,17 +1438,37 @@ class MainWindow(QMainWindow):
             
         # 执行删除
         share_name = self.share_selector_combo.currentText()
+        success_count = 0
+        error_count = 0
+        
+        # 更新状态栏
+        self.status_bar_label.setText(f"正在删除 {len(items_to_delete)} 个项目...")
+        QApplication.processEvents()  # 立即更新UI
+        
         for item in items_to_delete:
-            remote_path = "/".join(self.active_path_stack + [item['name']])
-            result = self.active_peer_client.delete_file(share_name, remote_path)
-            if result:
-                self.add_log_message(f"已删除: {item['name']}", "🗑️")
-            else:
-                self.add_log_message(f"删除失败: {item['name']}", "❌")
+            try:
+                remote_path = "/".join(self.active_path_stack + [item['name']])
+                result = self.active_peer_client.delete_file(share_name, remote_path)
+                if result:
+                    self.add_log_message(f"已删除: {item['name']}", "🗑️")
+                    success_count += 1
+                else:
+                    self.add_log_message(f"删除失败: {item['name']}", "❌")
+                    error_count += 1
+            except Exception as e:
+                self.add_log_message(f"删除 {item['name']} 时出错: {e}", "❌")
+                error_count += 1
                 
         # 刷新文件列表
         self.refresh_current_file_view()
         
+        # 显示操作结果
+        if error_count == 0:
+            self.status_bar_label.setText(f"成功删除 {success_count} 个项目")
+        else:
+            self.status_bar_label.setText(f"删除完成: {success_count} 成功, {error_count} 失败")
+            QMessageBox.warning(self, "删除结果", f"成功删除 {success_count} 个项目，{error_count} 个项目删除失败。", QMessageBox.Ok)
+
     def handle_rename_action(self):
         """处理重命名文件或文件夹的操作"""
         selected_rows = sorted(list(set(item.row() for item in self.file_table_widget.selectedItems())))
@@ -1467,17 +1491,27 @@ class MainWindow(QMainWindow):
             return
             
         # 执行重命名
-        share_name = self.share_selector_combo.currentText()
-        remote_path = "/".join(self.active_path_stack + [old_name])
-        result = self.active_peer_client.rename_file(share_name, remote_path, new_name)
-        
-        if result:
-            self.add_log_message(f"已重命名: {old_name} -> {new_name}", "✏️")
-            # 刷新文件列表
-            self.refresh_current_file_view()
-        else:
-            QMessageBox.critical(self, "错误", f"重命名失败: {old_name}", QMessageBox.Ok)
+        try:
+            share_name = self.share_selector_combo.currentText()
+            remote_path = "/".join(self.active_path_stack + [old_name])
             
+            # 更新状态栏提示
+            self.status_bar_label.setText(f"正在重命名: {old_name} -> {new_name}")
+            QApplication.processEvents()  # 立即更新UI
+            
+            # 调用API执行重命名
+            result = self.active_peer_client.rename_file(share_name, remote_path, new_name)
+            
+            if result:
+                self.add_log_message(f"已重命名: {old_name} -> {new_name}", "✏️")
+                # 刷新文件列表
+                self.refresh_current_file_view()
+            else:
+                QMessageBox.critical(self, "错误", f"重命名失败: {old_name}", QMessageBox.Ok)
+        except Exception as e:
+            self.add_log_message(f"重命名时出错: {e}", "❌")
+            QMessageBox.critical(self, "错误", f"重命名失败: {str(e)}", QMessageBox.Ok)
+
     def on_worker_file_finished(self, message: str):
         """当工作线程完成一个文件时调用的槽函数。"""
         self.add_log_message(message, "✅")
@@ -1486,11 +1520,19 @@ class MainWindow(QMainWindow):
         """当工作线程完成所有任务时调用的槽函数。"""
         self.is_transfer_active = False
         if self.progress_dialog: self.progress_dialog.close()
+        
+        # 【修复】先更新状态栏，避免卡顿
+        self.status_bar_label.setText("传输任务完成")
+        self.add_log_message("所有传输任务已完成。", "🎉")
+        QApplication.processEvents()  # 立即更新UI
+        
+        # 刷新文件列表
+        self.refresh_current_file_view()
+        
+        # 显示完成提示
         if self.worker_thread and not self.worker_thread.has_errors:
             QMessageBox.information(self, "任务完成", "所有传输任务已成功完成。", QMessageBox.Ok)
-            self.add_log_message("所有传输任务已完成。", "🎉")
-
-        self.refresh_current_file_view()
+        
         self.worker_thread = None
 
     def on_worker_error(self, error_message: str):
@@ -1717,10 +1759,19 @@ class MainWindow(QMainWindow):
         """在后台测量与远程设备的延迟。"""
 
         def do_ping():
-            start = time.perf_counter()
-            if client.get_ping():
-                delay = int((time.perf_counter() - start) * 1000)
-                self.status_bar_label.setText(f"已连接到 {name} | 延迟: {delay}ms")
+            try:
+                start = time.perf_counter()
+                if client.get_ping():
+                    delay = int((time.perf_counter() - start) * 1000)
+                    # 使用QTimer在主线程中安全地更新UI
+                    QTimer.singleShot(0, lambda: self.status_bar_label.setText(f"已连接到 {name} | 延迟: {delay}ms"))
+                else:
+                    # 如果ping失败，只显示已连接状态
+                    QTimer.singleShot(0, lambda: self.status_bar_label.setText(f"已连接到 {name}"))
+            except Exception as e:
+                print(f"测量延迟时出错: {e}")
+                # 出错时也只显示已连接状态
+                QTimer.singleShot(0, lambda: self.status_bar_label.setText(f"已连接到 {name}"))
 
         threading.Thread(target=do_ping, daemon=True).start()
 
@@ -1914,7 +1965,7 @@ class MainWindow(QMainWindow):
             self.device_add_queue.extend(devices_to_add)
             # 立即处理更新，不等待定时器
             self._process_device_list_updates()
-            
+
     def populate_initial_devices(self):
         """应用启动时，获取一次完整的设备列表进行填充。"""
         print("正在获取初始设备列表...")

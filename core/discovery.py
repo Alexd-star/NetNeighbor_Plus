@@ -17,15 +17,13 @@ class DiscoveryListener:
         if name in online_devices:
             del online_devices[name]
 
-        # 【核心改动】'name' 使用完整的服务名，以便UI精确查找
-        # 优先级提高，确保设备下线消息能够快速传递
+        # 【修复】移除重复发布的代码，只发布一次设备下线事件
         event_data = {"event": "peer_offline", "name": name, "friendly_name": friendly_name}
         bus.publish("peer_update", event_data)
         
-        # 再次发布一次，确保消息被处理
-        # 这是一个简单的机制，确保即使第一次消息在高负载下丢失，第二次也能被处理
-        import threading
-        threading.Timer(0.5, lambda: bus.publish("peer_update", event_data)).start()
+        # 删除重复发送的代码，避免双重日志提示
+        # import threading
+        # threading.Timer(0.5, lambda: bus.publish("peer_update", event_data)).start()
 
     def update_service(self, zeroconf: Zeroconf, type_: str, name: str) -> None:
         self.add_service(zeroconf, type_, name)
