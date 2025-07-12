@@ -164,6 +164,18 @@ async def notify_shares_changed(request: Request):
         await manager.broadcast(json.dumps(event_data))
         return {"status": "ok"}
     except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+
+# 【修复】添加外部API端点，用于客户端通知共享变更
+@app.post("/api/v1/notify_shares_changed")
+async def notify_shares_changed_external():
+    """外部API端点，用于客户端通知共享变更"""
+    try:
+        event_data = {"event": "shares_updated", "device_name": "external_client"}
+        await manager.broadcast(json.dumps(event_data))
+        return {"status": "ok"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/api/v1/peers")
 def get_peers(): return JSONResponse(content=online_devices)
 @app.get("/api/v1/shares")
