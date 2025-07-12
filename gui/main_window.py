@@ -410,6 +410,11 @@ class MainWindow(QMainWindow):
         self.ui_update_timer.setSingleShot(True)
         self.ui_update_timer.setInterval(150)
         self.ui_update_timer.timeout.connect(self._process_device_list_updates)
+        
+        # 3. 创建一个周期性定时器，用于定期与后端同步设备状态
+        self.device_sync_timer = QTimer(self)
+        self.device_sync_timer.setInterval(3000)  # 每3秒同步一次
+        self.device_sync_timer.timeout.connect(self._sync_device_list_with_backend)
 
         self._setup_window()
         self._load_icons()
@@ -509,6 +514,8 @@ class MainWindow(QMainWindow):
         self.update_local_status_display()
         # 【核心改动】: 转而调用新的方法，在启动时拉取一次全量设备列表。
         self.populate_initial_devices()
+        # 启动设备同步定时器
+        self.device_sync_timer.start()
 
     def _get_my_ip(self) -> str:
         """获取本机的局域网IP地址。"""
@@ -1207,6 +1214,11 @@ class MainWindow(QMainWindow):
                 return
             else:
                 self.worker_thread.stop()
+        
+        # 停止设备同步定时器
+        if hasattr(self, 'device_sync_timer') and self.device_sync_timer.isActive():
+            self.device_sync_timer.stop()
+            
         self.add_log_message("应用正在关闭...", "👋")
         if self.ws_local_thread: self.ws_local_thread.stop()
         if self.ws_remote_thread: self.ws_remote_thread.stop()
@@ -1276,6 +1288,37 @@ class MainWindow(QMainWindow):
         count = len(self.online_devices_data)
         self.status_bar_label.setText(f"发现在线设备: {count} 个" if count > 0 else "就绪. 正在扫描局域网设备...")
 
+    def _sync_device_list_with_backend(self):
+        """定期与后端同步设备列表状态，确保UI显示的设备都是真实在线的"""
+        if not self.api_client:
+            return
+            
+        # 获取后端当前的设备列表
+        current_peers = self.api_client.get_peers()
+        if current_peers is None:
+            return
+            
+        my_service_name = f"{self.controller.service_name}._netneighbor._tcp.local."
+        
+        # 找出已经不在后端列表中但仍在UI中显示的设备
+        devices_to_remove = []
+        for service_name in list(self.online_devices_data.keys()):
+            if service_name != my_service_name and service_name not in current_peers:
+                devices_to_remove.append(service_name)
+        
+        # 找出在后端列表中但不在UI中显示的设备
+        devices_to_add = []
+        for service_name, data in current_peers.items():
+            if service_name != my_service_name and service_name not in self.online_devices_data:
+                devices_to_add.append((service_name, data))
+        
+        # 如果有需要更新的设备，将它们添加到队列并触发更新
+        if devices_to_remove or devices_to_add:
+            self.device_remove_queue.extend(devices_to_remove)
+            self.device_add_queue.extend(devices_to_add)
+            # 立即处理更新，不等待定时器
+            self._process_device_list_updates()
+            
     def populate_initial_devices(self):
         """应用启动时，获取一次完整的设备列表进行填充。"""
         print("正在获取初始设备列表...")
@@ -1294,7 +1337,9 @@ class MainWindow(QMainWindow):
 
     def _process_device_list_updates(self):
         """
-        批处理所有待处理的设备列表UI更新。由QTimer触发。
+        [PERFORMANCE FIX] 批处理所有待处理的设备列表UI更新。
+        当大量设备下线时，采用"先清空再重绘"策略以获得极致性能。
+        【优化】增强了设备下线检测的可靠性和响应速度。
         """
         # 复制当前队列的内容，然后立刻清空，以便接收下一批事件
         add_batch = self.device_add_queue[:]
@@ -1302,31 +1347,79 @@ class MainWindow(QMainWindow):
         self.device_add_queue.clear()
         self.device_remove_queue.clear()
 
-        # 关键优化：在批量操作前，暂停UI的重绘，防止界面闪烁
+        # 如果没有任何更新，则直接返回，避免不必要的操作
+        if not add_batch and not remove_batch:
+            return
+
+        # 处理添加操作
+        for service_name, device_data in add_batch:
+            self.online_devices_data[service_name] = device_data
+
+        # 处理移除操作，确保移除操作具有最高优先级
+        for service_name in remove_batch:
+            if service_name in self.online_devices_data:
+                # 检查是否断开了当前连接的设备
+                if self.active_peer_client:
+                    device_data = self.online_devices_data.get(service_name)
+                    if device_data:
+                        active_url_part = self.active_peer_client.base_url.split('//')[1]
+                        device_url_part = f"{device_data['address']}:{device_data['port']}"
+                        if active_url_part == device_url_part:
+                            self.clear_active_peer_view()
+                # 从核心数据字典中删除
+                del self.online_devices_data[service_name]
+
+        # 【优化】验证所有设备是否仍然在线，这是一个额外的安全检查
+        if self.api_client and remove_batch:  # 只在有设备下线时执行此检查
+            try:
+                current_peers = self.api_client.get_peers()
+                if current_peers is not None:
+                    # 找出已经不在后端列表中但仍在UI中显示的设备
+                    extra_devices_to_remove = []
+                    for service_name in list(self.online_devices_data.keys()):
+                        if service_name not in current_peers:
+                            extra_devices_to_remove.append(service_name)
+                    
+                    # 处理额外需要移除的设备
+                    for service_name in extra_devices_to_remove:
+                        if service_name in self.online_devices_data:
+                            # 检查是否断开了当前连接的设备
+                            if self.active_peer_client:
+                                device_data = self.online_devices_data.get(service_name)
+                                if device_data:
+                                    active_url_part = self.active_peer_client.base_url.split('//')[1]
+                                    device_url_part = f"{device_data['address']}:{device_data['port']}"
+                                    if active_url_part == device_url_part:
+                                        self.clear_active_peer_view()
+                            # 从核心数据字典中删除
+                            del self.online_devices_data[service_name]
+            except Exception as e:
+                print(f"验证设备在线状态时出错: {e}")
+
+        # --- 2. 基于最终状态，一次性重绘整个列表 ---
         self.device_list_widget.setUpdatesEnabled(False)
+        self.device_list_widget.clear()  # 这是最高效的操作
 
-        try:
-            # 批量处理移除
-            # 先创建一个待移除名称的集合，以提高查找效率
-            remove_set = set(remove_batch)
-            items_to_delete = []
-            for i in range(self.device_list_widget.count()):
-                item = self.device_list_widget.item(i)
-                if item and item.data(Qt.ItemDataRole.UserRole) in remove_set:
-                    items_to_delete.append(item)
+        # 3. 对最终的设备列表进行自然排序并重新添加所有项目
+        # 将字典转换为可排序的列表
+        sorted_devices = sorted(
+            self.online_devices_data.items(),
+            key=lambda item: natural_sort_key(item[0].split('._netneighbor._tcp.local.')[0])
+        )
 
-            for item in items_to_delete:
-                self.device_list_widget.takeItem(self.device_list_widget.row(item))
+        for service_name, device_data in sorted_devices:
+            display_name = service_name.split('._netneighbor._tcp.local.')[0]
+            dev_type = device_data.get("properties", {}).get("dev_type", "未知")
 
-            # 批量处理添加
-            for service_name, device_data in add_batch:
-                self._add_device_to_list(service_name, device_data)  # 调用我们已有的添加方法
+            item = QListWidgetItem(f"{display_name}\n类型: {dev_type}")
+            item.setIcon(self.device_icon)
+            item.setData(Qt.ItemDataRole.UserRole, service_name)
+            self.device_list_widget.addItem(item) # 高效地批量添加
 
-        finally:
-            # 关键优化：在所有操作完成后，一次性地重新启用UI重绘并应用所有更改
-            self.device_list_widget.setUpdatesEnabled(True)
+        # 关键：在所有操作完成后，一次性地重新启用UI重绘并应用所有更改
+        self.device_list_widget.setUpdatesEnabled(True)
 
-        # 最后，只更新一次状态栏的计数
+        # 4. 最后，只更新一次状态栏的计数
         self._update_status_bar_device_count()
 
     def update_my_shares_list(self):

@@ -4,7 +4,7 @@ from zeroconf import ServiceInfo, Zeroconf
 import threading
 
 # --- 配置 ---
-NUM_DEVICES_TO_SIMULATE = 200  # 您可以按需修改，比如改成500来做极限测试
+NUM_DEVICES_TO_SIMULATE = 500  # 您可以按需修改，比如改成500来做极限测试
 SERVICE_TYPE = "_netneighbor._tcp.local."
 BASE_PORT = 9000
 
