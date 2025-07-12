@@ -58,7 +58,8 @@ def load_config(force_reload: bool = False) -> Dict[str, Any]:
             try:
                 with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
                     _config = toml.load(f)
-                print(f"配置文件 '{CONFIG_PATH}' 已{'重新' if force_reload else ''}加载。")
+                # 移除配置文件加载的打印信息
+                # print(f"配置文件 '{CONFIG_PATH}' 已{'重新' if force_reload else ''}加载。")
             except FileNotFoundError:
                 print(f"未找到配置文件于 '{CONFIG_PATH}'")
                 _config = create_default_config()

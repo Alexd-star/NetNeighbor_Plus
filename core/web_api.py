@@ -187,16 +187,40 @@ async def download_file(share_name: str, file_path: str):
     if not os.path.isfile(abs_path): raise HTTPException(status_code=404, detail="File not found.")
     return FileResponse(abs_path, filename=os.path.basename(abs_path))
 @app.post("/api/v1/upload/{share_name}")
-async def upload_file(share_name: str, dest_path: str = "/", file: UploadFile = File(...)):
+async def upload_file(share_name: str, dest_path: str = "/", conflict_action: str = "overwrite", file: UploadFile = File(...)):
     up_dir, share = get_safe_path_and_share(share_name, dest_path)
     if "upload" not in share.get("permissions", []): raise HTTPException(status_code=403, detail="Upload permission denied.")
     dest = os.path.join(up_dir, file.filename)
     if not os.path.abspath(dest).startswith(os.path.abspath(up_dir)): raise HTTPException(status_code=403, detail="Invalid destination filename.")
+    
+    # 检查文件是否已存在
+    if os.path.exists(dest):
+        if conflict_action == "check":
+            # 仅检查文件是否存在，返回冲突状态
+            return {"exists": True, "filename": file.filename}
+        elif conflict_action == "skip":
+            # 跳过上传
+            return {"message": "File skipped.", "action": "skipped"}
+        elif conflict_action == "rename":
+            # 自动重命名文件
+            base_name, ext = os.path.splitext(file.filename)
+            counter = 1
+            while os.path.exists(dest):
+                new_filename = f"{base_name}_{counter}{ext}"
+                dest = os.path.join(up_dir, new_filename)
+                counter += 1
+    
     try:
         with open(dest, "wb") as buffer:
             while content := await file.read(1024 * 1024): buffer.write(content)
     except Exception as e: raise HTTPException(status_code=500, detail=str(e))
-    return {"message": "File uploaded."}
+    
+    # 返回上传结果，包括实际使用的文件名
+    return {
+        "message": "File uploaded.",
+        "filename": os.path.basename(dest),
+        "action": "renamed" if conflict_action == "rename" and os.path.basename(dest) != file.filename else "overwrite"
+    }
 @app.post("/api/v1/create_dir/{share_name}")
 async def create_directory(share_name: str, path: str):
     dir_path, share = get_safe_path_and_share(share_name, path)

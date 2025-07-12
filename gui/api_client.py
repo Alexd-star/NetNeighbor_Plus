@@ -151,13 +151,27 @@ class ApiClient:
         return self.client.stream("GET", url, params=params, timeout=None)
 
 
-    def upload_file_stream(self, share_name: str, dest_path: str, uploader: UploadStreamer):
+    def upload_file_stream(self, share_name: str, dest_path: str, uploader: UploadStreamer, conflict_action: str = "overwrite"):
         url = f"{self.base_url}/api/v1/upload/{share_name}"
-        params = {"dest_path": dest_path}
+        params = {"dest_path": dest_path, "conflict_action": conflict_action}
         files = {'file': (os.path.basename(uploader.file_path), uploader, 'application/octet-stream')}
         response = self.client.post(url, params=params, files=files, timeout=None)
         response.raise_for_status()
         return response.json()
+        
+    def check_file_exists(self, share_name: str, dest_path: str, filename: str):
+        """检查远程目录中是否已存在同名文件"""
+        url = f"{self.base_url}/api/v1/upload/{share_name}"
+        params = {"dest_path": dest_path, "conflict_action": "check"}
+        # 创建一个空文件对象，仅用于检查文件是否存在
+        empty_content = b''
+        files = {'file': (filename, empty_content, 'application/octet-stream')}
+        try:
+            response = self.client.post(url, params=params, files=files, timeout=5.0)
+            response.raise_for_status()
+            return response.json().get("exists", False)
+        except Exception:
+            return False
 
     def create_directory(self, share_name: str, path: str):
         url = f"{self.base_url}/api/v1/create_dir/{share_name}"

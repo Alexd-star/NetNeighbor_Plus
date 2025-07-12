@@ -126,7 +126,7 @@ class AppController(QObject):
         fastapi_app.state.controller = self
         fastapi_app.state.tcp_port = self.tcp_port
 
-        uvicorn_config = uvicorn.Config(fastapi_app, host="0.0.0.0", port=self.port, log_level="info", lifespan="on")
+        uvicorn_config = uvicorn.Config(fastapi_app, host="0.0.0.0", port=self.port, log_level="error", lifespan="on")
         self.uvicorn_server_thread = UvicornServer(uvicorn_config)
         self.uvicorn_server_thread.start()
 
