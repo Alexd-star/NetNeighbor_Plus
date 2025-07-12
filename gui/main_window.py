@@ -741,6 +741,16 @@ class MainWindow(QMainWindow):
         ul_action.toggled.connect(
             lambda checked: self._handle_local_share_permission_change(share_name, "upload", checked))
         permissions_menu.addAction(ul_action)
+        del_action = QAction("可删除", self, checkable=True)
+        del_action.setChecked("delete" in current_perms)
+        del_action.toggled.connect(
+            lambda checked: self._handle_local_share_permission_change(share_name, "delete", checked))
+        permissions_menu.addAction(del_action)
+        rename_action = QAction("可重命名", self, checkable=True)
+        rename_action.setChecked("rename" in current_perms)
+        rename_action.toggled.connect(
+            lambda checked: self._handle_local_share_permission_change(share_name, "rename", checked))
+        permissions_menu.addAction(rename_action)
         menu.addSeparator()
         remove_action = QAction("移除此共享", self)
         remove_action.triggered.connect(lambda: self.remove_local_share(share_name))
@@ -870,6 +880,34 @@ class MainWindow(QMainWindow):
         download_action = QAction(self.download_icon, "下载选中项", self)
         download_action.triggered.connect(self.handle_download_action)
         menu.addAction(download_action)
+        
+        # 获取当前共享的权限
+        current_share = self.share_selector_combo.currentText()
+        if not current_share:
+            menu.exec(self.file_table_widget.mapToGlobal(pos))
+            return
+            
+        # 获取当前共享的权限设置
+        all_shares = load_config(force_reload=True).get('shares', [])
+        target_share = next((s for s in all_shares if s.get("name") == current_share), None)
+        if not target_share:
+            menu.exec(self.file_table_widget.mapToGlobal(pos))
+            return
+            
+        permissions = target_share.get("permissions", [])
+        
+        # 只有一个选中项时才显示重命名选项
+        if len(selected_items) == len(set(item.row() for item in selected_items)) and "rename" in permissions:
+            rename_action = QAction("重命名", self)
+            rename_action.triggered.connect(self.handle_rename_action)
+            menu.addAction(rename_action)
+            
+        # 添加删除选项
+        if "delete" in permissions:
+            delete_action = QAction("删除选中项", self)
+            delete_action.triggered.connect(self.handle_delete_action)
+            menu.addAction(delete_action)
+            
         menu.exec(self.file_table_widget.mapToGlobal(pos))
 
     def _get_items_to_process(self) -> List[Dict[str, Any]]:
@@ -974,6 +1012,67 @@ class MainWindow(QMainWindow):
             if tasks:
                 self.start_worker_thread("正在上传文件...", tasks)
 
+    def handle_delete_action(self):
+        """处理删除文件或文件夹的操作"""
+        items_to_delete = self._get_items_to_process()
+        if not items_to_delete:
+            QMessageBox.information(self, "提示", "请先勾选或选中要删除的文件/文件夹。", QMessageBox.Ok)
+            return
+            
+        # 确认删除
+        msg = f"确定要删除选中的 {len(items_to_delete)} 个项目吗？此操作不可恢复。"
+        reply = QMessageBox.question(self, "确认删除", msg, 
+                                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                    QMessageBox.StandardButton.No)
+        if reply == QMessageBox.StandardButton.No:
+            return
+            
+        # 执行删除
+        share_name = self.share_selector_combo.currentText()
+        for item in items_to_delete:
+            remote_path = "/".join(self.active_path_stack + [item['name']])
+            result = self.active_peer_client.delete_file(share_name, remote_path)
+            if result:
+                self.add_log_message(f"已删除: {item['name']}", "🗑️")
+            else:
+                self.add_log_message(f"删除失败: {item['name']}", "❌")
+                
+        # 刷新文件列表
+        self.refresh_current_file_view()
+        
+    def handle_rename_action(self):
+        """处理重命名文件或文件夹的操作"""
+        selected_rows = sorted(list(set(item.row() for item in self.file_table_widget.selectedItems())))
+        if len(selected_rows) != 1:
+            QMessageBox.information(self, "提示", "请选择一个要重命名的文件或文件夹。", QMessageBox.Ok)
+            return
+            
+        row = selected_rows[0]
+        name_item = self.file_table_widget.item(row, 1)
+        if not name_item:
+            return
+            
+        old_name = name_item.text()
+        
+        # 获取新名称
+        from PySide6.QtWidgets import QInputDialog
+        new_name, ok = QInputDialog.getText(self, "重命名", "请输入新名称:", text=old_name)
+        
+        if not ok or not new_name or new_name == old_name:
+            return
+            
+        # 执行重命名
+        share_name = self.share_selector_combo.currentText()
+        remote_path = "/".join(self.active_path_stack + [old_name])
+        result = self.active_peer_client.rename_file(share_name, remote_path, new_name)
+        
+        if result:
+            self.add_log_message(f"已重命名: {old_name} -> {new_name}", "✏️")
+            # 刷新文件列表
+            self.refresh_current_file_view()
+        else:
+            QMessageBox.critical(self, "错误", f"重命名失败: {old_name}", QMessageBox.Ok)
+            
     def on_worker_file_finished(self, message: str):
         """当工作线程完成一个文件时调用的槽函数。"""
         self.add_log_message(message, "✅")

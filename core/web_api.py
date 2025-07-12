@@ -205,3 +205,47 @@ async def create_directory(share_name: str, path: str):
         os.makedirs(dir_path, exist_ok=True)
         return {"message": "Directory created."}
     except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/v1/delete/{share_name}")
+async def delete_file(share_name: str, file_path: str):
+    abs_path, share = get_safe_path_and_share(share_name, file_path)
+    if "delete" not in share.get("permissions", []): raise HTTPException(status_code=403, detail="Delete permission denied.")
+    
+    try:
+        if os.path.isdir(abs_path):
+            import shutil
+            shutil.rmtree(abs_path)
+            return {"message": "Directory deleted."}
+        elif os.path.isfile(abs_path):
+            os.remove(abs_path)
+            return {"message": "File deleted."}
+        else:
+            raise HTTPException(status_code=404, detail="File or directory not found.")
+    except Exception as e: 
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/api/v1/rename/{share_name}")
+async def rename_file(share_name: str, file_path: str, new_name: str):
+    abs_path, share = get_safe_path_and_share(share_name, file_path)
+    if "rename" not in share.get("permissions", []): raise HTTPException(status_code=403, detail="Rename permission denied.")
+    
+    # 验证新名称是否有效
+    if not new_name or "/" in new_name or "\\" in new_name:
+        raise HTTPException(status_code=400, detail="Invalid new name.")
+    
+    try:
+        # 获取父目录和新的完整路径
+        parent_dir = os.path.dirname(abs_path)
+        new_path = os.path.join(parent_dir, new_name)
+        
+        # 检查新路径是否已存在
+        if os.path.exists(new_path):
+            raise HTTPException(status_code=409, detail="A file or directory with that name already exists.")
+        
+        # 执行重命名
+        os.rename(abs_path, new_path)
+        return {"message": "File renamed."}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

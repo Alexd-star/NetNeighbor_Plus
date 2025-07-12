@@ -110,8 +110,12 @@ class SettingsWindow(QDialog):
         permissions_layout = QVBoxLayout(permissions_group)
         self.allow_download_checkbox = QCheckBox("允许其他设备下载文件")
         self.allow_upload_checkbox = QCheckBox("允许其他设备上传文件")
+        self.allow_delete_checkbox = QCheckBox("允许其他设备删除文件")
+        self.allow_rename_checkbox = QCheckBox("允许其他设备重命名文件")
         permissions_layout.addWidget(self.allow_download_checkbox)
         permissions_layout.addWidget(self.allow_upload_checkbox)
+        permissions_layout.addWidget(self.allow_delete_checkbox)
+        permissions_layout.addWidget(self.allow_rename_checkbox)
         right_layout.addWidget(permissions_group)
         right_layout.addStretch()
         share_layout.addWidget(right_widget, stretch=1)
@@ -135,6 +139,12 @@ class SettingsWindow(QDialog):
         self.allow_upload_checkbox.stateChanged.connect(
             self.update_config_in_memory
         )
+        self.allow_delete_checkbox.stateChanged.connect(
+            self.update_config_in_memory
+        )
+        self.allow_rename_checkbox.stateChanged.connect(
+            self.update_config_in_memory
+        )
 
         self._set_details_enabled(False)
 
@@ -143,6 +153,8 @@ class SettingsWindow(QDialog):
         self.share_name_edit.setEnabled(enabled)
         self.allow_download_checkbox.setEnabled(enabled)
         self.allow_upload_checkbox.setEnabled(enabled)
+        self.allow_delete_checkbox.setEnabled(enabled)
+        self.allow_rename_checkbox.setEnabled(enabled)
 
     def load_config_to_ui(self):
         """将内存中的配置数据加载到UI界面上。"""
@@ -169,18 +181,22 @@ class SettingsWindow(QDialog):
     def _clear_details(self):
         """清空并禁用右侧共享详情区域。"""
         for widget in [self.share_name_edit, self.allow_download_checkbox,
-                       self.allow_upload_checkbox]:
+                       self.allow_upload_checkbox, self.allow_delete_checkbox,
+                       self.allow_rename_checkbox]:
             widget.blockSignals(True)
 
         self.share_name_edit.clear()
         self.share_path_label.setText("路径: (请在左侧选择一项)")
         self.allow_download_checkbox.setChecked(False)
         self.allow_upload_checkbox.setChecked(False)
+        self.allow_delete_checkbox.setChecked(False)
+        self.allow_rename_checkbox.setChecked(False)
         self._set_details_enabled(False)
         self.current_selected_path = None
 
         for widget in [self.share_name_edit, self.allow_download_checkbox,
-                       self.allow_upload_checkbox]:
+                       self.allow_upload_checkbox, self.allow_delete_checkbox,
+                       self.allow_rename_checkbox]:
             widget.blockSignals(False)
 
     def on_share_selected(self, item: QListWidgetItem):
@@ -194,7 +210,8 @@ class SettingsWindow(QDialog):
 
         if share_found:
             for widget in [self.share_name_edit, self.allow_download_checkbox,
-                           self.allow_upload_checkbox]:
+                           self.allow_upload_checkbox, self.allow_delete_checkbox,
+                           self.allow_rename_checkbox]:
                 widget.blockSignals(True)
 
             self.share_name_edit.setText(share_found.get("name", ""))
@@ -204,10 +221,13 @@ class SettingsWindow(QDialog):
             permissions = share_found.get("permissions", [])
             self.allow_download_checkbox.setChecked("download" in permissions)
             self.allow_upload_checkbox.setChecked("upload" in permissions)
+            self.allow_delete_checkbox.setChecked("delete" in permissions)
+            self.allow_rename_checkbox.setChecked("rename" in permissions)
             self._set_details_enabled(True)
 
             for widget in [self.share_name_edit, self.allow_download_checkbox,
-                           self.allow_upload_checkbox]:
+                           self.allow_upload_checkbox, self.allow_delete_checkbox,
+                           self.allow_rename_checkbox]:
                 widget.blockSignals(False)
 
     def update_config_in_memory(self):
@@ -223,6 +243,10 @@ class SettingsWindow(QDialog):
                     permissions.append("download")
                 if self.allow_upload_checkbox.isChecked():
                     permissions.append("upload")
+                if self.allow_delete_checkbox.isChecked():
+                    permissions.append("delete")
+                if self.allow_rename_checkbox.isChecked():
+                    permissions.append("rename")
                 share["permissions"] = list(set(permissions))
 
                 for i in range(self.share_list_widget.count()):

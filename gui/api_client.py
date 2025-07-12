@@ -165,6 +165,30 @@ class ApiClient:
         response = self.client.post(url, params=params, timeout=5.0)
         response.raise_for_status()
         return response.json()
+        
+    def delete_file(self, share_name: str, file_path: str):
+        """删除文件或文件夹"""
+        try:
+            url = f"{self.base_url}/api/v1/delete/{share_name}"
+            params = {"file_path": file_path}
+            response = self.client.delete(url, params=params, timeout=5.0)
+            response.raise_for_status()
+            return response.json()
+        except (httpx.RequestError, httpx.HTTPStatusError) as e:
+            print(f"错误: 删除文件 '{file_path}' 失败 - {e}")
+            return None
+            
+    def rename_file(self, share_name: str, file_path: str, new_name: str):
+        """重命名文件或文件夹"""
+        try:
+            url = f"{self.base_url}/api/v1/rename/{share_name}"
+            params = {"file_path": file_path, "new_name": new_name}
+            response = self.client.put(url, params=params, timeout=5.0)
+            response.raise_for_status()
+            return response.json()
+        except (httpx.RequestError, httpx.HTTPStatusError) as e:
+            print(f"错误: 重命名文件 '{file_path}' 失败 - {e}")
+            return None
 
     def download_folder_tcp(self, share_name: str, remote_path: str) -> TcpDownloader:
         """
