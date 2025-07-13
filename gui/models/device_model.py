@@ -1,8 +1,8 @@
 """
 设备模型类，用于管理设备数据
 """
-from typing import Dict, Any, Optional, List, Callable
 import re
+from typing import Dict, Any, Optional, List, Callable
 
 
 def natural_sort_key(s: str) -> list:
@@ -11,8 +11,18 @@ def natural_sort_key(s: str) -> list:
     例如，'v10' 会被转换为 ['v', 10]，'v2' 会被转换为 ['v', 2]。
     这样在比较时，10 会被正确地识别为大于 2。
     """
-    return [int(text) if text.isdigit() else text.lower()
-            for text in re.split(r'([0-9]+)', s)]
+    # 改进的自然排序算法，确保数字部分正确排序
+    result = []
+    # 先分割字符串，确保数字部分被正确识别
+    parts = re.split(r'(\d+)', s)
+    for part in parts:
+        if part.isdigit():
+            # 数字部分转换为整数
+            result.append(int(part))
+        else:
+            # 非数字部分转换为小写
+            result.append(part.lower())
+    return result
 
 
 class DeviceModel:
@@ -23,9 +33,21 @@ class DeviceModel:
         self._on_device_added_callbacks: List[Callable[[str, Dict[str, Any]], None]] = []
         self._on_device_removed_callbacks: List[Callable[[str], None]] = []
         self._on_device_list_changed_callbacks: List[Callable[[], None]] = []
+        self.my_service_name = None  # 用于存储本机服务名称
+        
+    def set_my_service_name(self, service_name: str):
+        """设置本机服务名称"""
+        self.my_service_name = service_name
+        # 如果本机设备已在列表中，立即移除
+        if service_name in self.online_devices:
+            self.remove_device(service_name)
         
     def add_device(self, service_name: str, device_data: Dict[str, Any]) -> bool:
         """添加设备到列表中，如果设备已存在则返回False"""
+        # 如果是本机设备，则不添加
+        if self.my_service_name and service_name == self.my_service_name:
+            return False
+            
         if service_name in self.online_devices:
             return False
             
@@ -82,6 +104,12 @@ class DeviceModel:
     def get_device_count(self) -> int:
         """获取设备数量"""
         return len(self.online_devices)
+        
+    def remove_my_device(self) -> bool:
+        """移除本机设备"""
+        if self.my_service_name and self.my_service_name in self.online_devices:
+            return self.remove_device(self.my_service_name)
+        return False
         
     def on_device_added(self, callback: Callable[[str, Dict[str, Any]], None]) -> None:
         """注册设备添加回调"""

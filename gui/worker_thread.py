@@ -102,7 +102,7 @@ class WorkerThread(QThread):
         # 平滑进度显示的变量
         last_reported_progress = 0
         progress_smoothing_factor = 0.3  # 平滑因子，值越小变化越平滑
-        
+
         for chunk in source_iterator:
             if not self._is_running:
                 raise InterruptedError("Transfer cancelled")
@@ -143,7 +143,7 @@ class WorkerThread(QThread):
                     # 流式传输，显示已接收数据量
                     self.progress_text_update.emit(
                         f"已传输: {self._format_size(received)} - 速度: {self._format_size(speed)}/s"
-                    )
+                        )
                 
                 last_update_time = current_time
                 bytes_since_last_update = 0

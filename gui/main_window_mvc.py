@@ -8,36 +8,35 @@ import math
 from typing import Dict, Any, List, Optional
 
 from PySide6.QtCore import Qt, QTimer, QSize, QPoint
-from PySide6.QtGui import QCloseEvent
+from PySide6.QtGui import QCloseEvent, QIcon, QAction
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QStackedWidget,
     QLabel, QMessageBox, QPushButton, QStatusBar, QStyle, QFrame
 )
-from PySide6.QtGui import QIcon, QAction, QCloseEvent
 
-from gui.app_controller import AppController
 from core.config_loader import load_config, CONFIG_PATH
+from gui.app_controller import AppController
 from gui.models.device_model import DeviceModel
-from gui.models.share_model import ShareModel, RemoteShareModel
 from gui.models.file_model import FileModel
 from gui.models.connection_model import ConnectionModel
-from gui.models.transfer_model import TransferModel
 from gui.models.log_model import LogModel
-from gui.views.device_list_view import DeviceListView
-from gui.views.share_list_view import ShareListView
-from gui.views.log_view import LogView
-from gui.views.status_view import StatusView
-from gui.views.welcome_view import WelcomeView
-from gui.views.file_browser_view import FileBrowserView
-from gui.views.transfer_list_view import TransferListView
-from gui.presenters.device_presenter import DevicePresenter
-from gui.presenters.share_presenter import SharePresenter
-from gui.presenters.file_browser_presenter import FileBrowserPresenter
+from gui.models.share_model import ShareModel, RemoteShareModel
+from gui.models.transfer_model import TransferModel
 from gui.presenters.connection_presenter import ConnectionPresenter
+from gui.presenters.device_presenter import DevicePresenter
+from gui.presenters.file_browser_presenter import FileBrowserPresenter
 from gui.presenters.log_presenter import LogPresenter
+from gui.presenters.share_presenter import SharePresenter
 from gui.presenters.status_presenter import StatusPresenter
 from gui.presenters.transfer_manager import TransferManager
 from gui.settings_window import SettingsWindow
+from gui.views.device_list_view import DeviceListView
+from gui.views.file_browser_view import FileBrowserView
+from gui.views.log_view import LogView
+from gui.views.share_list_view import ShareListView
+from gui.views.status_view import StatusView
+from gui.views.transfer_list_view import TransferListView
+from gui.views.welcome_view import WelcomeView
 
 
 class MainWindowMVC(QMainWindow):
@@ -47,37 +46,35 @@ class MainWindowMVC(QMainWindow):
         super().__init__()
         self.controller = controller
         
-        # 创建模型
+        # 初始化延迟加载的组件为None，避免引用错误
+        self.log_view = None
+        self.file_browser_view = None
+        self.floating_transfer_view = None
+        self.log_presenter = None
+        self.file_browser_presenter = None
+        self.transfer_manager = None
+        
+        # 创建关键模型
         self.device_model = DeviceModel()
         self.share_model = ShareModel()
         self.remote_share_model = RemoteShareModel()
-        self.file_model = FileModel()
         self.connection_model = ConnectionModel()
         self.transfer_model = TransferModel()
         self.log_model = LogModel()
+        self.file_model = FileModel()  # 文件模型需要在初始化时创建
         
-        # 创建视图
+        # 创建关键视图
         self.device_list_view = DeviceListView()
         self.share_list_view = ShareListView()
-        self.log_view = LogView()
-        self.status_view = StatusView()
         self.welcome_view = WelcomeView()
-        self.file_browser_view = FileBrowserView()
-        self.floating_transfer_view = TransferListView()
+        self.status_view = StatusView()
         
-        # 创建Presenter
+        # 创建关键Presenter
         self.device_presenter = DevicePresenter(self.device_model, self.device_list_view)
         self.share_presenter = SharePresenter(self.share_model, self.share_list_view)
-        self.log_presenter = LogPresenter(self.log_model, self.log_view)
         self.status_presenter = StatusPresenter(self.controller, self.connection_model, self.status_view)
-        self.file_browser_presenter = FileBrowserPresenter(
-            self.file_model, self.remote_share_model, self.connection_model, self.file_browser_view
-        )
         self.connection_presenter = ConnectionPresenter(
             self.connection_model, self.remote_share_model, self.log_model
-        )
-        self.transfer_manager = TransferManager(
-            self.transfer_model, self.log_model, self.connection_model
         )
         
         # 设置UI
@@ -85,10 +82,61 @@ class MainWindowMVC(QMainWindow):
         self._setup_menu()
         self._setup_status_bar()
         self._setup_icons()
-        self._setup_connections()
         
         # 更新本地共享列表
         self.share_model.reload_shares()
+        
+        # 使用QTimer延迟初始化非关键组件
+        QTimer.singleShot(200, self._delayed_init)
+        
+    def _delayed_init(self):
+        """延迟初始化非关键组件"""
+        # 创建非关键视图
+        self.log_view = LogView()
+        self.file_browser_view = FileBrowserView()
+        self.floating_transfer_view = TransferListView()
+        
+        # 添加日志视图到UI
+        left_panel = self.findChild(QSplitter).widget(0)
+        if left_panel:
+            left_layout = left_panel.layout()
+            left_layout.addWidget(self.log_view, stretch=3)
+        
+        # 添加文件浏览器视图到堆叠窗口
+        self.stacked_widget.addWidget(self.file_browser_view)
+        
+        # 创建非关键Presenter
+        self.log_presenter = LogPresenter(self.log_model, self.log_view)
+        self.file_browser_presenter = FileBrowserPresenter(
+            self.file_model, self.remote_share_model, self.connection_model, self.file_browser_view
+        )
+        
+        # 设置文件浏览器图标
+        self.file_browser_presenter.set_icons(
+            self.back_icon, self.upload_icon, self.download_icon, self.folder_icon, self.file_icon
+        )
+        
+        # 创建传输管理器
+        self.transfer_manager = TransferManager(
+            self.transfer_model, self.log_model, self.connection_model
+        )
+        
+        # 创建悬浮传输列表窗口
+        self.floating_transfer_view.set_floating_mode(True)
+        self.floating_transfer_view.setVisible(False)
+        
+        # 设置传输列表图标
+        self.floating_transfer_view.set_icons(self.download_icon, self.upload_icon)
+        
+        # 设置传输管理器的悬浮视图
+        self.transfer_manager.set_floating_transfer_view(self.floating_transfer_view)
+        self.transfer_manager.set_icons(self.download_icon, self.upload_icon)
+        
+        # 设置连接
+        self._setup_connections()
+        
+        # 添加初始日志
+        self.log_presenter.add_log("系统初始化完成", "✅")
         
     def _setup_ui(self):
         """设置UI布局"""
@@ -135,9 +183,6 @@ class MainWindowMVC(QMainWindow):
         # 左侧共享列表
         left_layout.addWidget(self.share_list_view, stretch=3)
         
-        # 左侧日志视图
-        left_layout.addWidget(self.log_view, stretch=3)
-        
         # 右侧面板
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
@@ -146,7 +191,6 @@ class MainWindowMVC(QMainWindow):
         # 右侧堆叠视图
         self.stacked_widget = QStackedWidget()
         self.stacked_widget.addWidget(self.welcome_view)
-        self.stacked_widget.addWidget(self.file_browser_view)
         self.stacked_widget.setCurrentWidget(self.welcome_view)
         right_layout.addWidget(self.stacked_widget, stretch=1)
         
@@ -161,10 +205,6 @@ class MainWindowMVC(QMainWindow):
         
         # 添加到主布局
         main_layout.addWidget(main_splitter, stretch=1)
-        
-        # 创建悬浮传输列表窗口
-        self.floating_transfer_view.set_floating_mode(True)
-        self.floating_transfer_view.setVisible(False)
         
     def _setup_menu(self):
         """设置菜单栏"""
@@ -213,27 +253,20 @@ class MainWindowMVC(QMainWindow):
     def _setup_icons(self):
         """设置图标"""
         style = self.style()
-        folder_icon = style.standardIcon(QStyle.StandardPixmap.SP_DirIcon)
-        file_icon = style.standardIcon(QStyle.StandardPixmap.SP_FileIcon)
-        back_icon = style.standardIcon(QStyle.StandardPixmap.SP_ArrowLeft)
-        upload_icon = style.standardIcon(QStyle.StandardPixmap.SP_ArrowUp)
-        download_icon = style.standardIcon(QStyle.StandardPixmap.SP_ArrowDown)
-        device_icon = style.standardIcon(QStyle.StandardPixmap.SP_DriveNetIcon)
-        refresh_icon = style.standardIcon(QStyle.StandardPixmap.SP_BrowserReload)
-        settings_icon = style.standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView)
-        delete_icon = style.standardIcon(QStyle.StandardPixmap.SP_TrashIcon)
-        rename_icon = style.standardIcon(QStyle.StandardPixmap.SP_FileDialogContentsView)
+        self.folder_icon = style.standardIcon(QStyle.StandardPixmap.SP_DirIcon)
+        self.file_icon = style.standardIcon(QStyle.StandardPixmap.SP_FileIcon)
+        self.back_icon = style.standardIcon(QStyle.StandardPixmap.SP_ArrowLeft)
+        self.upload_icon = style.standardIcon(QStyle.StandardPixmap.SP_ArrowUp)
+        self.download_icon = style.standardIcon(QStyle.StandardPixmap.SP_ArrowDown)
+        self.device_icon = style.standardIcon(QStyle.StandardPixmap.SP_DriveNetIcon)
+        self.refresh_icon = style.standardIcon(QStyle.StandardPixmap.SP_BrowserReload)
+        self.settings_icon = style.standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView)
+        self.delete_icon = style.standardIcon(QStyle.StandardPixmap.SP_TrashIcon)
+        self.rename_icon = style.standardIcon(QStyle.StandardPixmap.SP_FileDialogContentsView)
         
-        # 设置图标到Presenter
-        self.device_presenter.set_device_icon(device_icon)
-        self.share_presenter.set_folder_icon(folder_icon)
-        self.file_browser_presenter.set_icons(
-            back_icon, upload_icon, download_icon, folder_icon, file_icon
-        )
-        
-        # 设置传输列表视图图标
-        self.floating_transfer_view.set_icons(download_icon, upload_icon)
-        self.transfer_manager.set_icons(download_icon, upload_icon)
+        # 设置图标到关键Presenter
+        self.device_presenter.set_device_icon(self.device_icon)
+        self.share_presenter.set_folder_icon(self.folder_icon)
         
     def _setup_connections(self):
         """设置信号连接"""
@@ -245,39 +278,52 @@ class MainWindowMVC(QMainWindow):
         self.share_presenter.on_permission_change(self._on_permission_change)
         self.share_presenter.on_remove_share(self._on_remove_share)
         
-        # 文件操作
-        self.file_browser_presenter.on_upload_file(self._on_upload_file)
-        self.file_browser_presenter.on_upload_folder(self._on_upload_folder)
-        self.file_browser_presenter.on_download(self._on_download)
-        self.file_browser_presenter.on_rename(self._on_rename)
-        self.file_browser_presenter.on_delete(self._on_delete)
+        # 文件操作 - 只有在file_browser_presenter已初始化时才设置
+        if self.file_browser_presenter:
+            self.file_browser_presenter.on_upload_file(self._on_upload_file)
+            self.file_browser_presenter.on_upload_folder(self._on_upload_folder)
+            self.file_browser_presenter.on_download(self._on_download)
+            self.file_browser_presenter.on_rename(self._on_rename)
+            self.file_browser_presenter.on_delete(self._on_delete)
         
         # 连接事件
         self.connection_presenter.connection_successful.connect(self._on_connection_successful)
         self.connection_presenter.connection_failed.connect(self._on_connection_failed)
         self.connection_presenter.on_websocket_message(self._on_websocket_message)
         
-        # 传输事件
-        self.transfer_manager.task_added.connect(self._on_task_added)
-        self.transfer_manager.task_progress.connect(self._on_task_progress)
-        self.transfer_manager.task_status.connect(self._on_task_status)
-        self.transfer_manager.task_completed.connect(self._on_task_completed)
-        self.transfer_manager.task_error.connect(self._on_task_error)
-        self.transfer_manager.all_tasks_completed.connect(self._on_all_tasks_completed)
+        # 传输事件 - 只有在transfer_manager已初始化时才设置
+        if self.transfer_manager:
+            self.transfer_manager.task_added.connect(self._on_task_added)
+            self.transfer_manager.task_progress.connect(self._on_task_progress)
+            self.transfer_manager.task_status.connect(self._on_task_status)
+            self.transfer_manager.task_completed.connect(self._on_task_completed)
+            self.transfer_manager.task_error.connect(self._on_task_error)
+            self.transfer_manager.all_tasks_completed.connect(self._on_all_tasks_completed)
         
         # 设置悬浮传输列表视图
-        self.transfer_manager.set_floating_transfer_view(self.floating_transfer_view)
+        if self.floating_transfer_view:
+            self.transfer_manager.set_floating_transfer_view(self.floating_transfer_view)
         
-        # 连接悬浮窗位置更新信号
-        self.floating_transfer_view.position_update_needed.connect(self._update_floating_window_position)
+        # 连接悬浮窗位置更新信号 - 只有在floating_transfer_view已初始化时才设置
+        if self.floating_transfer_view:
+            self.floating_transfer_view.position_update_needed.connect(self._update_floating_window_position)
         
     def post_init_setup(self):
         """在后台服务启动后进行网络相关的初始化"""
-        self.log_presenter.add_log("后端服务已就绪, UI开始进行网络初始化...")
+        # 确保日志组件已初始化
+        if not self.log_presenter:
+            # 如果log_presenter尚未初始化，则先添加到状态栏
+            self.status_bar_label.setText("后端服务已就绪, UI开始进行网络初始化...")
+        else:
+            self.log_presenter.add_log("后端服务已就绪, UI开始进行网络初始化...")
         
         # 设置本地API客户端
         base_url = f"http://{self.connection_model.get_my_ip()}:{self.controller.port}"
         self.connection_model.set_local_api_client(base_url)
+        
+        # 设置本机服务名称
+        my_service_name = f"{self.controller.service_name}._netneighbor._tcp.local."
+        self.device_model.set_my_service_name(my_service_name)
         
         # 设置WebSocket连接
         self.connection_presenter.setup_local_websocket(self.controller.port)
@@ -288,7 +334,10 @@ class MainWindowMVC(QMainWindow):
         # 更新状态栏
         if self.device_model.get_device_count() == 0:
             self.status_bar_label.setText("初始化完成，正在扫描局域网设备...")
-        self.log_presenter.add_log("系统初始化完成", "✅")
+            
+        # 添加日志（如果日志组件已初始化）
+        if self.log_presenter:
+            self.log_presenter.add_log("系统初始化完成", "✅")
         
     def _populate_initial_devices(self):
         """获取初始设备列表"""
@@ -320,7 +369,8 @@ class MainWindowMVC(QMainWindow):
         self.status_bar_label.setText(f"正在连接到 {display_name}...")
         
         # 添加日志
-        self.log_presenter.add_log(f"正在尝试连接到 {display_name}...", "⏳")
+        if self.log_presenter:
+            self.log_presenter.add_log(f"正在尝试连接到 {display_name}...", "⏳")
         
         # 连接到设备
         self.connection_presenter.connect_to_device(service_name, device_data)
@@ -330,31 +380,43 @@ class MainWindowMVC(QMainWindow):
         # 更新状态栏
         display_name = self.connection_model.get_active_device_name()
         self.status_bar_label.setText(f"已连接到 {display_name}")
-        self.log_presenter.add_log(f"已连接到设备: {display_name}", "🔌")
         
-        # 切换到文件浏览器页面
-        self.stacked_widget.setCurrentWidget(self.file_browser_view)
+        # 添加日志
+        if self.log_presenter:
+            self.log_presenter.add_log(f"已连接到设备: {display_name}", "🔌")
+        
+        # 切换到文件浏览器页面（如果已初始化）
+        if self.file_browser_view and self.stacked_widget.indexOf(self.file_browser_view) != -1:
+            self.stacked_widget.setCurrentWidget(self.file_browser_view)
         
         # 强制刷新文件列表
         # 1. 确保共享选择器有选项
         share_names = self.remote_share_model.get_share_names()
-        self.log_presenter.add_log(f"获取到共享列表: {share_names}", "📂")
+        
+        if self.log_presenter:
+            self.log_presenter.add_log(f"获取到共享列表: {share_names}", "📂")
         
         if share_names:
             # 2. 设置当前共享为第一个共享
             current_share = share_names[0]
             self.remote_share_model.set_current_share(current_share)
-            self.log_presenter.add_log(f"选择共享: {current_share}", "📁")
             
-            # 更新上传按钮状态
-            self.file_browser_presenter._update_upload_button_state()
+            if self.log_presenter:
+                self.log_presenter.add_log(f"选择共享: {current_share}", "📁")
+            
+            # 更新上传按钮状态（如果文件浏览器已初始化）
+            if self.file_browser_presenter:
+                self.file_browser_presenter._update_upload_button_state()
             
             # 3. 强制刷新文件列表
-            self.log_presenter.add_log("正在刷新文件列表...", "🔄")
+            if self.log_presenter:
+                self.log_presenter.add_log("正在刷新文件列表...", "🔄")
+            
             # 延迟刷新，确保UI已更新
             QTimer.singleShot(500, lambda: self._refresh_files())
         else:
-            self.log_presenter.add_log("没有可用的共享文件夹", "⚠️")
+            if self.log_presenter:
+                self.log_presenter.add_log("没有可用的共享文件夹", "⚠️")
         
     def _on_connection_failed(self, error_message):
         """处理连接失败"""
@@ -364,8 +426,11 @@ class MainWindowMVC(QMainWindow):
     def _on_websocket_message(self, data, event, source):
         """处理WebSocket消息"""
         if event == "peer_online":
-            # 添加设备
-            self.device_model.add_device(data['name'], data['data'])
+            # 检查是否为本机设备
+            my_service_name = f"{self.controller.service_name}._netneighbor._tcp.local."
+            if data['name'] != my_service_name:
+                # 添加设备（非本机）
+                self.device_model.add_device(data['name'], data['data'])
             # 更新状态栏
             self._update_device_count_status()
         elif event == "peer_offline":
@@ -388,7 +453,8 @@ class MainWindowMVC(QMainWindow):
                     QTimer.singleShot(500, self._refresh_files)
         elif event == "shares_updated":
             # 刷新共享列表
-            self.log_presenter.add_log(f"设备 {data.get('device_name')} 共享已更新。", "🔄")
+            if self.log_presenter:
+                self.log_presenter.add_log(f"设备 {data.get('device_name')} 共享已更新。", "🔄")
             if self.connection_model.get_active_peer_client():
                 self._refresh_shares()
                 
@@ -397,7 +463,8 @@ class MainWindowMVC(QMainWindow):
         devices_count = self.device_model.get_device_count()
         if devices_count > 0:
             self.status_bar_label.setText(f"已发现 {devices_count} 个设备")
-            self.log_presenter.add_log(f"网络中有 {devices_count} 个设备在线", "🔍")
+            if self.log_presenter:
+                self.log_presenter.add_log(f"网络中有 {devices_count} 个设备在线", "🔍")
         else:
             self.status_bar_label.setText("正在扫描局域网设备...")
     
@@ -410,8 +477,10 @@ class MainWindowMVC(QMainWindow):
         # 延迟刷新文件列表，避免频繁刷新
         if self.file_browser_presenter:
             self.file_browser_presenter._refresh_files()
-        else:
+        elif self.log_presenter:
             self.log_presenter.add_log("文件浏览器Presenter未初始化", "❌")
+        else:
+            print("警告: 文件浏览器和日志组件均未初始化")
         
     def _refresh_shares(self):
         """刷新共享列表"""

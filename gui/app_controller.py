@@ -8,16 +8,15 @@ import platform
 import socket
 import threading
 import time
-import uvicorn
 
-from PySide6.QtCore import QObject, Signal
+import uvicorn
+from PySide6.QtCore import QObject, Signal, QTimer
 
 from core.config_loader import get_config, get_shares
 from core.discovery import DiscoveryService
+from core.event_bus import bus
 from core.file_watcher import start_file_watcher
 from core.web_api import app as fastapi_app, manager as websocket_manager
-# 【解耦第1步】: 导入事件总线
-from core.event_bus import bus
 
 
 class UvicornServer(threading.Thread):
@@ -64,10 +63,9 @@ class AppController(QObject):
         self.watcher_thread = None
         self.is_running = False
 
-        # 【解耦第2步】: 在初始化时，订阅 "peer_update" 事件
+        # 订阅 "peer_update" 事件
         bus.subscribe("peer_update", self._handle_peer_update_event)
 
-    # 【解耦第3步】: 创建一个处理事件的回调方法
     def _handle_peer_update_event(self, event_data: dict):
         """当从事件总线接收到设备更新事件时，通过WebSocket广播出去。"""
         # 这个操作需要在一个事件循环中运行。
@@ -116,13 +114,7 @@ class AppController(QObject):
         }
         self.device_info_updated.emit()
 
-        self.discovery_service = DiscoveryService(
-            host_ip, self.port, self.service_name, self.device_properties
-        )
-        self.discovery_service.start()
-
-        self._start_file_watcher()
-
+        # 启动API服务器（关键服务）
         fastapi_app.state.controller = self
         fastapi_app.state.tcp_port = self.tcp_port
 
@@ -134,7 +126,26 @@ class AppController(QObject):
         waiter_thread = threading.Thread(target=self._wait_and_signal_startup, daemon=True)
         waiter_thread.start()
 
+        # 使用QTimer延迟启动非关键服务
+        QTimer.singleShot(500, self._start_delayed_services)
+
         self.is_running = True
+        
+    def _start_delayed_services(self):
+        """延迟启动非关键服务，避免阻塞UI"""
+        # 启动设备发现服务
+        try:
+            host_ip = socket.gethostbyname(socket.gethostname())
+        except socket.gaierror:
+            host_ip = "127.0.0.1"
+            
+        self.discovery_service = DiscoveryService(
+            host_ip, self.port, self.service_name, self.device_properties
+        )
+        self.discovery_service.start()
+
+        # 启动文件监视器
+        self._start_file_watcher()
 
     def _wait_and_signal_startup(self):
         """等待 Uvicorn 启动完毕后, 发射 server_started 信号。"""
@@ -174,7 +185,6 @@ class AppController(QObject):
         paths = [s['path'] for s in get_shares() if os.path.exists(s['path'])]
         if not paths: return
 
-        from core.web_api import manager
         def on_change(delete_events=None):
             if not self.is_running or self.stop_event.is_set(): return
             
@@ -211,7 +221,7 @@ class AppController(QObject):
                 if loop and loop.is_running():
                     async def safe_broadcast():
                         try:
-                            await manager.broadcast(json.dumps(event_data))
+                            await websocket_manager.broadcast(json.dumps(event_data))
                         except Exception as e:
                             print(f"文件监视器广播时出错: {e}")
 

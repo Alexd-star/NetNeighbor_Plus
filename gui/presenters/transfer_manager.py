@@ -307,17 +307,17 @@ class TransferManager(QObject):
         
         # 发射任务完成信号
         self.task_completed.emit(task_id)
-            
+        
         # 清理工作线程
         if self.worker_thread:
             self.worker_thread.deleteLater()
-            self.worker_thread = None
-            
+        self.worker_thread = None
+
         # 如果没有更多任务，更新传输模型状态
-        self.transfer_model.set_is_transfer_active(False)
-        
-        # 启动下一个任务
-        if self.task_queue:
+        if not self.task_queue:
+            self.transfer_model.set_is_transfer_active(False)
+        else:
+            # 启动下一个任务
             self._start_next_task()
         
     def _on_error(self, task_id: str, error_message: str):
