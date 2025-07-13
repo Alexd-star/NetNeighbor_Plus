@@ -1,6 +1,11 @@
 QWidget {
     font-family: "Microsoft YaHei UI", "Segoe UI", "Source Han Sans", "Noto Sans CJK SC", sans-serif;
     font-size: 10pt;
+    outline: none;
+}
+
+QPushButton, QLineEdit, QComboBox, QListWidget, QTableWidget, QTextEdit, QTreeView, QListView, QTabBar::tab {
+    outline: 0;
 }
 
 QMainWindow, QDialog {
@@ -163,4 +168,321 @@ QProgressBar::chunk {
                                     stop: 0 #4CAF50, stop: 1 #81C784);
     border-radius: 4px;
     margin: 0.5px;
+}
+
+
+#WelcomeCardFrame {
+    background-color: #f5f5f5;
+    border-radius: 15px;
+    border: 1px solid #ddd;
+}
+
+#WelcomeTitle {
+    color: #2c3e50;
+    font-size: 24pt;
+    font-weight: bold;
+}
+
+#WelcomeSeparator {
+    background-color: #ddd;
+}
+
+#WelcomeSubtitle {
+    color: #3498db;
+    font-size: 14pt;
+    font-weight: bold;
+    margin-top: 10px;
+}
+
+#InstructionsFrame {
+    background-color: transparent;
+    border-radius: 8px;
+}
+
+.StepNumber {
+    background-color: #3498db;
+    color: white;
+    border-radius: 12px;
+    padding: 4px;
+    font-weight: bold;
+    min-width: 24px;
+    min-height: 24px;
+    max-width: 24px;
+    max-height: 24px;
+    text-align: center;
+}
+
+.StepLabel {
+    color: #2c3e50;
+    font-size: 14px;
+}
+
+#WelcomeTip {
+    color: #7f8c8d;
+    font-style: italic;
+    margin-top: 5px;
+}
+
+#FileTableDropOverlay {
+    background-color: rgba(200, 200, 255, 180);
+    border: 2px dashed #8080FF;
+    border-radius: 8px;
+    color: #404080;
+    font-size: 16px;
+    font-weight: bold;
+    padding: 20px;
+}
+
+#ContextMenuAction {
+    padding: 8px 16px;
+}
+
+#ContextMenuAction:hover {
+    background-color: #e6f2ff;
+}
+
+#FilePathLabel {
+    font-weight: bold;
+    color: #333;
+}
+
+
+QTableWidget::item:alternate {
+    background-color: #f8f9fa;
+}
+
+
+QTableWidget::item:selected {
+    background-color: #cce5ff;
+    color: #000;
+    border: 1px solid #007bff;
+}
+
+QListWidget::item:focus, QTableWidget::item:focus {
+    border: none;
+    outline: none;
+}
+
+QListWidget:focus, QTableWidget:focus, QTreeView:focus, QComboBox:focus {
+    outline: none;
+    border-color: #cccccc;
+}
+
+QLineEdit:focus {
+    border: 1px solid #007bff;
+    outline: none;
+}
+
+QPushButton:focus {
+    outline: none;
+}
+
+QComboBox {
+    outline: none;
+}
+
+QComboBox:focus {
+    border: 1px solid #007bff;
+    outline: none;
+}
+
+QTabWidget::pane {
+    border: 1px solid #dcdcdc;
+    border-radius: 3px;
+    outline: none;
+}
+
+QTabBar::tab {
+    outline: none;
+}
+
+QTabBar::tab:selected {
+    background-color: #ffffff;
+    border-bottom: none;
+    outline: none;
+}
+
+QTabBar::tab:!selected {
+    background-color: #f0f0f0;
+    outline: none;
+}
+
+QTableWidget {
+    outline: none;
+}
+
+QTableWidget::item {
+    outline: none;
+}
+
+QTableWidget::item:focus {
+    outline: none;
+    border: none;
+}
+
+QTableWidget::item:selected {
+    background-color: #cce5ff;
+    color: #000;
+    border: 1px solid #007bff;
+    outline: none;
+}
+
+QTableView::item:selected:!active {
+    background-color: #e6f2ff;
+    color: #000;
+    border: 1px solid #b3d7ff;
+    outline: none;
+}
+
+#TransferListView {
+    background-color: transparent;
+}
+
+#TransferListFrame {
+    background-color: white;
+    border: 1px solid #cccccc;
+    border-radius: 5px;
+}
+
+#TransferListFrame[floating="true"] {
+    background-color: white;
+    border: 1px solid #cccccc;
+    border-radius: 5px;
+    margin: 6px;
+}
+
+#TransferListTitle {
+    font-weight: bold;
+    color: #333333;
+    font-size: 11pt;
+    padding: 4px 0;
+}
+
+#TransferListCloseButton {
+    border: none;
+    background-color: #f44336;
+    color: white;
+    font-weight: bold;
+    font-size: 12pt;
+    border-radius: 11px;
+    padding: 0px;
+    margin: 0px;
+    line-height: 1;
+}
+
+#TransferListCloseButton:hover {
+    background-color: #d32f2f;
+}
+
+#TransferListCloseButton:pressed {
+    background-color: #b71c1c;
+}
+
+#TransferTaskList {
+    border: 1px solid #e0e0e0;
+    border-radius: 4px;
+    background-color: white;
+    alternate-background-color: #f9f9f9;
+    padding: 5px;
+    outline: none;
+}
+
+#TransferTaskList::item {
+    padding: 5px;
+    border-bottom: 1px solid #eeeeee;
+    margin-bottom: 5px;
+    border-radius: 3px;
+    outline: none;
+}
+
+#TransferTaskList::item:focus {
+    border: none;
+    outline: none;
+}
+
+#TransferTaskList:focus {
+    outline: none;
+    border-color: #e0e0e0;
+}
+
+#TransferTaskIcon[iconType="text"] {
+    font-size: 14pt;
+}
+
+#TransferTaskName {
+    color: #333333;
+    padding: 3px 0;
+    font-size: 9pt;
+}
+
+#TransferTaskType {
+    color: #666666;
+    font-size: 8pt;
+    padding: 3px 0;
+}
+
+#TransferTaskStatus {
+    color: #666666;
+    font-size: 8pt;
+    padding: 3px 0;
+}
+
+#TransferTaskProgressBar {
+    border: 1px solid #e0e0e0;
+    border-radius: 3px;
+    text-align: center;
+    background-color: #f5f5f5;
+    font-size: 7pt;
+    padding: 1px;
+}
+
+#TransferTaskProgressBar::chunk {
+    background-color: #4CAF50;
+    border-radius: 2px;
+}
+
+#TransferTaskProgressBarDownload {
+    border: 1px solid #e0e0e0;
+    border-radius: 3px;
+    text-align: center;
+    background-color: #f5f5f5;
+    font-size: 7pt;
+    padding: 1px;
+}
+
+#TransferTaskProgressBarDownload::chunk {
+    background-color: #2196F3;
+    border-radius: 2px;
+}
+
+#TransferTaskProgressBarUpload {
+    border: 1px solid #e0e0e0;
+    border-radius: 3px;
+    text-align: center;
+    background-color: #f5f5f5;
+    font-size: 7pt;
+    padding: 1px;
+}
+
+#TransferTaskProgressBarUpload::chunk {
+    background-color: #4CAF50;
+    border-radius: 2px;
+}
+
+#TransferTaskCancelButton {
+    background-color: #f44336;
+    color: white;
+    border: none;
+    border-radius: 3px;
+    padding: 3px 6px;
+    font-size: 8pt;
+    font-weight: bold;
+}
+
+#TransferTaskCancelButton:hover {
+    background-color: #d32f2f;
+}
+
+#TransferTaskCancelButton:pressed {
+    background-color: #b71c1c;
 }

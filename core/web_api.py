@@ -176,6 +176,50 @@ async def notify_shares_changed_external():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/api/v1/notify_file_changed")
+async def notify_file_changed_external(request: Request):
+    """外部API端点，用于客户端通知文件变更"""
+    try:
+        # 使用静态变量存储最近的事件，用于防抖
+        if not hasattr(notify_file_changed_external, "last_events"):
+            notify_file_changed_external.last_events = {}
+            
+        data = await request.json()
+        share_name = data.get("share_name")
+        path = data.get("path")
+        
+        if not share_name or path is None:
+            raise HTTPException(status_code=400, detail="Missing required parameters: share_name or path")
+            
+        # 创建事件键
+        event_key = f"{share_name}:{path}"
+        
+        # 检查是否是重复事件（1秒内的相同事件）
+        current_time = time.time()
+        if event_key in notify_file_changed_external.last_events:
+            last_time = notify_file_changed_external.last_events[event_key]
+            if current_time - last_time < 1.0:  # 1秒防抖
+                return {"status": "debounced"}
+                
+        # 更新最后事件时间
+        notify_file_changed_external.last_events[event_key] = current_time
+        
+        # 清理旧事件（超过10秒的事件）
+        notify_file_changed_external.last_events = {
+            k: v for k, v in notify_file_changed_external.last_events.items()
+            if current_time - v < 10.0
+        }
+            
+        event_data = {
+            "event": "refresh_files",
+            "share_name": share_name,
+            "path": path
+        }
+        await manager.broadcast(json.dumps(event_data))
+        return {"status": "ok"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/api/v1/peers")
 def get_peers(): return JSONResponse(content=online_devices)
 @app.get("/api/v1/shares")

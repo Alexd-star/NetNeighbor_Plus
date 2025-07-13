@@ -219,19 +219,38 @@ class ApiClient:
             response = self.client.get(f"{self.base_url}/api/v1/ping", timeout=3.0)
             response.raise_for_status()
             return True
+        except httpx.ConnectError as e:
+            print(f"Ping失败: 连接错误 - {e}")
+            return False
+        except httpx.TimeoutException as e:
+            print(f"Ping失败: 连接超时 - {e}")
+            return False
+        except httpx.HTTPStatusError as e:
+            print(f"Ping失败: HTTP状态错误 - {e}")
+            return False
         except Exception as e:
-            print(f"Ping失败: {e}")
+            print(f"Ping失败: 未知错误 - {e}")
             return False
 
     def get_files(self, share_name: str, path: str = "/") -> Optional[list]:
         try:
             params = {"path": path}
             url = f"{self.base_url}/api/v1/files/{share_name}"
-            response = self.client.get(url, params=params, timeout=5.0)
+            response = self.client.get(url, params=params, timeout=10.0)
             response.raise_for_status()
-            return response.json()
-        except (httpx.RequestError, httpx.HTTPStatusError) as e:
-            print(f"错误: 请求文件列表'{share_name}{path}'失败 - {e}")
+            result = response.json()
+            return result
+        except httpx.ConnectError as e:
+            print(f"错误: 请求文件列表'{share_name}{path}'失败 - 连接错误: {e}")
+            return None
+        except httpx.TimeoutException as e:
+            print(f"错误: 请求文件列表'{share_name}{path}'失败 - 超时: {e}")
+            return None
+        except httpx.HTTPStatusError as e:
+            print(f"错误: 请求文件列表'{share_name}{path}'失败 - HTTP状态错误: {e}")
+            return None
+        except Exception as e:
+            print(f"错误: 请求文件列表'{share_name}{path}'失败 - 未知错误: {e}")
             return None
             
     # 【修复】添加delete_file方法，用于删除文件或文件夹
@@ -322,6 +341,21 @@ class ApiClient:
             return True
         except Exception as e:
             print(f"通知共享变更失败: {e}")
+            return False
+            
+    def notify_file_changed(self, share_name: str, path: str) -> bool:
+        """通知服务器文件已更改"""
+        try:
+            url = f"{self.base_url}/api/v1/notify_file_changed"
+            data = {
+                "share_name": share_name,
+                "path": path
+            }
+            response = self.client.post(url, json=data, timeout=5.0)
+            response.raise_for_status()
+            return True
+        except Exception as e:
+            print(f"通知文件变更失败: {e}")
             return False
 
     def download_folder_tcp(self, share_name: str, remote_path: str) -> TcpDownloader:

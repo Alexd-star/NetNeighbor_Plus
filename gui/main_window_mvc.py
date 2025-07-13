@@ -1,0 +1,787 @@
+"""
+新的MainWindow类，使用MVC架构
+"""
+import os
+import socket
+import time
+import math
+from typing import Dict, Any, List, Optional
+
+from PySide6.QtCore import Qt, QTimer, QSize, QPoint
+from PySide6.QtGui import QCloseEvent
+from PySide6.QtWidgets import (
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QStackedWidget,
+    QLabel, QMessageBox, QPushButton, QStatusBar, QStyle, QFrame
+)
+from PySide6.QtGui import QIcon, QAction, QCloseEvent
+
+from gui.app_controller import AppController
+from core.config_loader import load_config, CONFIG_PATH
+from gui.models.device_model import DeviceModel
+from gui.models.share_model import ShareModel, RemoteShareModel
+from gui.models.file_model import FileModel
+from gui.models.connection_model import ConnectionModel
+from gui.models.transfer_model import TransferModel
+from gui.models.log_model import LogModel
+from gui.views.device_list_view import DeviceListView
+from gui.views.share_list_view import ShareListView
+from gui.views.log_view import LogView
+from gui.views.status_view import StatusView
+from gui.views.welcome_view import WelcomeView
+from gui.views.file_browser_view import FileBrowserView
+from gui.views.transfer_list_view import TransferListView
+from gui.presenters.device_presenter import DevicePresenter
+from gui.presenters.share_presenter import SharePresenter
+from gui.presenters.file_browser_presenter import FileBrowserPresenter
+from gui.presenters.connection_presenter import ConnectionPresenter
+from gui.presenters.log_presenter import LogPresenter
+from gui.presenters.status_presenter import StatusPresenter
+from gui.presenters.transfer_manager import TransferManager
+from gui.settings_window import SettingsWindow
+
+
+class MainWindowMVC(QMainWindow):
+    """使用MVC架构的主窗口类"""
+    
+    def __init__(self, controller: AppController):
+        super().__init__()
+        self.controller = controller
+        
+        # 创建模型
+        self.device_model = DeviceModel()
+        self.share_model = ShareModel()
+        self.remote_share_model = RemoteShareModel()
+        self.file_model = FileModel()
+        self.connection_model = ConnectionModel()
+        self.transfer_model = TransferModel()
+        self.log_model = LogModel()
+        
+        # 创建视图
+        self.device_list_view = DeviceListView()
+        self.share_list_view = ShareListView()
+        self.log_view = LogView()
+        self.status_view = StatusView()
+        self.welcome_view = WelcomeView()
+        self.file_browser_view = FileBrowserView()
+        self.floating_transfer_view = TransferListView()
+        
+        # 创建Presenter
+        self.device_presenter = DevicePresenter(self.device_model, self.device_list_view)
+        self.share_presenter = SharePresenter(self.share_model, self.share_list_view)
+        self.log_presenter = LogPresenter(self.log_model, self.log_view)
+        self.status_presenter = StatusPresenter(self.controller, self.connection_model, self.status_view)
+        self.file_browser_presenter = FileBrowserPresenter(
+            self.file_model, self.remote_share_model, self.connection_model, self.file_browser_view
+        )
+        self.connection_presenter = ConnectionPresenter(
+            self.connection_model, self.remote_share_model, self.log_model
+        )
+        self.transfer_manager = TransferManager(
+            self.transfer_model, self.log_model, self.connection_model
+        )
+        
+        # 设置UI
+        self._setup_ui()
+        self._setup_menu()
+        self._setup_status_bar()
+        self._setup_icons()
+        self._setup_connections()
+        
+        # 更新本地共享列表
+        self.share_model.reload_shares()
+        
+    def _setup_ui(self):
+        """设置UI布局"""
+        self.setWindowTitle("邻里+ (NetNeighbor Plus)")
+        self.setGeometry(100, 100, 1100, 680)
+        self.setWindowIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon))
+        
+        # 居中显示
+        try:
+            center = self.screen().availableGeometry().center()
+            frame = self.frameGeometry()
+            frame.moveCenter(center)
+            self.move(frame.topLeft())
+        except AttributeError:
+            self.setGeometry(100, 100, 1100, 680)
+            
+        # 加载样式表
+        try:
+            with open("gui/style.qss", "r", encoding="utf-8") as f:
+                self.setStyleSheet(f.read())
+        except Exception as e:
+            print(f"加载样式表失败: {e}")
+            
+        # 创建中央部件
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        main_layout = QVBoxLayout(central_widget)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        
+        # 添加状态视图
+        main_layout.addWidget(self.status_view)
+        
+        # 创建主分割器
+        main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        
+        # 左侧面板
+        left_panel = QWidget()
+        left_layout = QVBoxLayout(left_panel)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # 左侧设备列表
+        left_layout.addWidget(self.device_list_view, stretch=4)
+        
+        # 左侧共享列表
+        left_layout.addWidget(self.share_list_view, stretch=3)
+        
+        # 左侧日志视图
+        left_layout.addWidget(self.log_view, stretch=3)
+        
+        # 右侧面板
+        right_panel = QWidget()
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # 右侧堆叠视图
+        self.stacked_widget = QStackedWidget()
+        self.stacked_widget.addWidget(self.welcome_view)
+        self.stacked_widget.addWidget(self.file_browser_view)
+        self.stacked_widget.setCurrentWidget(self.welcome_view)
+        right_layout.addWidget(self.stacked_widget, stretch=1)
+        
+        # 添加到主分割器
+        main_splitter.addWidget(left_panel)
+        main_splitter.addWidget(right_panel)
+        main_splitter.setStretchFactor(0, 1)
+        main_splitter.setStretchFactor(1, 2)
+        
+        # 设置初始分割位置（左侧占整个宽度的30%）
+        main_splitter.setSizes([300, 650])
+        
+        # 添加到主布局
+        main_layout.addWidget(main_splitter, stretch=1)
+        
+        # 创建悬浮传输列表窗口
+        self.floating_transfer_view.set_floating_mode(True)
+        self.floating_transfer_view.setVisible(False)
+        
+    def _setup_menu(self):
+        """设置菜单栏"""
+        menu_bar = self.menuBar()
+        
+        # 文件菜单
+        file_menu = menu_bar.addMenu("文件")
+        settings_action = file_menu.addAction("设置...")
+        settings_action.triggered.connect(self._open_settings)
+        file_menu.addSeparator()
+        exit_action = file_menu.addAction("退出")
+        exit_action.triggered.connect(self.close)
+        
+        # 帮助菜单
+        help_menu = menu_bar.addMenu("帮助")
+        about_action = help_menu.addAction("关于...")
+        about_action.triggered.connect(self._show_about)
+        
+    def _setup_status_bar(self):
+        """设置状态栏"""
+        self.status_bar = QStatusBar()
+        self.setStatusBar(self.status_bar)
+        self.status_bar_label = QLabel("正在初始化...")
+        self.status_bar.addWidget(self.status_bar_label, 1)
+        
+        # 添加传输状态按钮到状态栏右侧
+        self.transfer_status_button = QPushButton("传输: 0")
+        self.transfer_status_button.setStyleSheet("""
+            QPushButton {
+                border: none;
+                padding: 2px 8px;
+                background-color: #f0f0f0;
+                border-radius: 3px;
+                color: #333;
+            }
+            QPushButton:hover {
+                background-color: #e0e0e0;
+            }
+        """)
+        self.transfer_status_button.setToolTip("点击查看传输任务")
+        self.transfer_status_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.transfer_status_button.clicked.connect(self._toggle_transfer_list)
+        self.transfer_status_button.setVisible(False)  # 初始隐藏
+        self.status_bar.addPermanentWidget(self.transfer_status_button)
+        
+    def _setup_icons(self):
+        """设置图标"""
+        style = self.style()
+        folder_icon = style.standardIcon(QStyle.StandardPixmap.SP_DirIcon)
+        file_icon = style.standardIcon(QStyle.StandardPixmap.SP_FileIcon)
+        back_icon = style.standardIcon(QStyle.StandardPixmap.SP_ArrowLeft)
+        upload_icon = style.standardIcon(QStyle.StandardPixmap.SP_ArrowUp)
+        download_icon = style.standardIcon(QStyle.StandardPixmap.SP_ArrowDown)
+        device_icon = style.standardIcon(QStyle.StandardPixmap.SP_DriveNetIcon)
+        refresh_icon = style.standardIcon(QStyle.StandardPixmap.SP_BrowserReload)
+        settings_icon = style.standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView)
+        delete_icon = style.standardIcon(QStyle.StandardPixmap.SP_TrashIcon)
+        rename_icon = style.standardIcon(QStyle.StandardPixmap.SP_FileDialogContentsView)
+        
+        # 设置图标到Presenter
+        self.device_presenter.set_device_icon(device_icon)
+        self.share_presenter.set_folder_icon(folder_icon)
+        self.file_browser_presenter.set_icons(
+            back_icon, upload_icon, download_icon, folder_icon, file_icon
+        )
+        
+        # 设置传输列表视图图标
+        self.floating_transfer_view.set_icons(download_icon, upload_icon)
+        self.transfer_manager.set_icons(download_icon, upload_icon)
+        
+    def _setup_connections(self):
+        """设置信号连接"""
+        # 设备选择
+        self.device_presenter.on_device_selected(self._on_device_selected)
+        
+        # 共享管理
+        self.share_presenter.on_manage_shares(self._open_settings)
+        self.share_presenter.on_permission_change(self._on_permission_change)
+        self.share_presenter.on_remove_share(self._on_remove_share)
+        
+        # 文件操作
+        self.file_browser_presenter.on_upload_file(self._on_upload_file)
+        self.file_browser_presenter.on_upload_folder(self._on_upload_folder)
+        self.file_browser_presenter.on_download(self._on_download)
+        self.file_browser_presenter.on_rename(self._on_rename)
+        self.file_browser_presenter.on_delete(self._on_delete)
+        
+        # 连接事件
+        self.connection_presenter.connection_successful.connect(self._on_connection_successful)
+        self.connection_presenter.connection_failed.connect(self._on_connection_failed)
+        self.connection_presenter.on_websocket_message(self._on_websocket_message)
+        
+        # 传输事件
+        self.transfer_manager.task_added.connect(self._on_task_added)
+        self.transfer_manager.task_progress.connect(self._on_task_progress)
+        self.transfer_manager.task_status.connect(self._on_task_status)
+        self.transfer_manager.task_completed.connect(self._on_task_completed)
+        self.transfer_manager.task_error.connect(self._on_task_error)
+        self.transfer_manager.all_tasks_completed.connect(self._on_all_tasks_completed)
+        
+        # 设置悬浮传输列表视图
+        self.transfer_manager.set_floating_transfer_view(self.floating_transfer_view)
+        
+        # 连接悬浮窗位置更新信号
+        self.floating_transfer_view.position_update_needed.connect(self._update_floating_window_position)
+        
+    def post_init_setup(self):
+        """在后台服务启动后进行网络相关的初始化"""
+        self.log_presenter.add_log("后端服务已就绪, UI开始进行网络初始化...")
+        
+        # 设置本地API客户端
+        base_url = f"http://{self.connection_model.get_my_ip()}:{self.controller.port}"
+        self.connection_model.set_local_api_client(base_url)
+        
+        # 设置WebSocket连接
+        self.connection_presenter.setup_local_websocket(self.controller.port)
+        
+        # 获取初始设备列表
+        self._populate_initial_devices()
+        
+        # 更新状态栏
+        if self.device_model.get_device_count() == 0:
+            self.status_bar_label.setText("初始化完成，正在扫描局域网设备...")
+        self.log_presenter.add_log("系统初始化完成", "✅")
+        
+    def _populate_initial_devices(self):
+        """获取初始设备列表"""
+        client = self.connection_model.get_local_api_client()
+        if not client:
+            return
+            
+        peers = client.get_peers()
+        if not peers:
+            return
+            
+        my_service_name = f"{self.controller.service_name}._netneighbor._tcp.local."
+        for name, data in peers.items():
+            if name != my_service_name:
+                self.device_model.add_device(name, data)
+        
+        # 更新状态栏显示设备数量
+        self._update_device_count_status()
+                
+    def _on_device_selected(self, service_name: str, device_data: Dict[str, Any]):
+        """处理设备选择"""
+        # 获取设备显示名称
+        display_name = service_name.split('._netneighbor._tcp.local.')[0]
+        
+        # 切换到欢迎页面
+        self.stacked_widget.setCurrentWidget(self.welcome_view)
+        
+        # 更新状态栏
+        self.status_bar_label.setText(f"正在连接到 {display_name}...")
+        
+        # 添加日志
+        self.log_presenter.add_log(f"正在尝试连接到 {display_name}...", "⏳")
+        
+        # 连接到设备
+        self.connection_presenter.connect_to_device(service_name, device_data)
+        
+    def _on_connection_successful(self, client, shares):
+        """处理连接成功"""
+        # 更新状态栏
+        display_name = self.connection_model.get_active_device_name()
+        self.status_bar_label.setText(f"已连接到 {display_name}")
+        self.log_presenter.add_log(f"已连接到设备: {display_name}", "🔌")
+        
+        # 切换到文件浏览器页面
+        self.stacked_widget.setCurrentWidget(self.file_browser_view)
+        
+        # 强制刷新文件列表
+        # 1. 确保共享选择器有选项
+        share_names = self.remote_share_model.get_share_names()
+        self.log_presenter.add_log(f"获取到共享列表: {share_names}", "📂")
+        
+        if share_names:
+            # 2. 设置当前共享为第一个共享
+            current_share = share_names[0]
+            self.remote_share_model.set_current_share(current_share)
+            self.log_presenter.add_log(f"选择共享: {current_share}", "📁")
+            
+            # 更新上传按钮状态
+            self.file_browser_presenter._update_upload_button_state()
+            
+            # 3. 强制刷新文件列表
+            self.log_presenter.add_log("正在刷新文件列表...", "🔄")
+            # 延迟刷新，确保UI已更新
+            QTimer.singleShot(500, lambda: self._refresh_files())
+        else:
+            self.log_presenter.add_log("没有可用的共享文件夹", "⚠️")
+        
+    def _on_connection_failed(self, error_message):
+        """处理连接失败"""
+        # 保持在欢迎页面
+        self.stacked_widget.setCurrentWidget(self.welcome_view)
+        
+    def _on_websocket_message(self, data, event, source):
+        """处理WebSocket消息"""
+        if event == "peer_online":
+            # 添加设备
+            self.device_model.add_device(data['name'], data['data'])
+            # 更新状态栏
+            self._update_device_count_status()
+        elif event == "peer_offline":
+            # 移除设备
+            self.device_model.remove_device(data['name'])
+            # 更新状态栏
+            self._update_device_count_status()
+        elif event == "refresh_files":
+            # 防抖处理，避免短时间内重复刷新
+            if not hasattr(self, "_last_refresh_time"):
+                self._last_refresh_time = 0
+                
+            current_time = time.time()
+            if current_time - self._last_refresh_time > 0.5:  # 500毫秒防抖
+                self._last_refresh_time = current_time
+                
+                # 检查是否正在传输文件
+                if not self.transfer_model.is_transfer_active():
+                    # 仅在非传输状态下刷新文件列表
+                    QTimer.singleShot(500, self._refresh_files)
+        elif event == "shares_updated":
+            # 刷新共享列表
+            self.log_presenter.add_log(f"设备 {data.get('device_name')} 共享已更新。", "🔄")
+            if self.connection_model.get_active_peer_client():
+                self._refresh_shares()
+                
+    def _update_device_count_status(self):
+        """更新状态栏中的设备计数"""
+        devices_count = self.device_model.get_device_count()
+        if devices_count > 0:
+            self.status_bar_label.setText(f"已发现 {devices_count} 个设备")
+            self.log_presenter.add_log(f"网络中有 {devices_count} 个设备在线", "🔍")
+        else:
+            self.status_bar_label.setText("正在扫描局域网设备...")
+    
+    def _is_transferring(self):
+        """检查是否正在传输文件"""
+        return self.transfer_model.is_transfer_active()
+                
+    def _refresh_files(self):
+        """刷新文件列表"""
+        # 延迟刷新文件列表，避免频繁刷新
+        if self.file_browser_presenter:
+            self.file_browser_presenter._refresh_files()
+        else:
+            self.log_presenter.add_log("文件浏览器Presenter未初始化", "❌")
+        
+    def _refresh_shares(self):
+        """刷新共享列表"""
+        client = self.connection_model.get_active_peer_client()
+        if not client:
+            return
+            
+        shares = client.get_shares()
+        if shares is not None:
+            self.remote_share_model.set_shares(shares)
+            
+    def _on_permission_change(self, share_name: str, perm: str, checked: bool):
+        """处理权限变更"""
+        config = load_config(force_reload=True)
+        if not config:
+            return
+            
+        for share in config.get("shares", []):
+            if share.get("name") == share_name:
+                if "permissions" not in share:
+                    share["permissions"] = ["read"]
+                if checked and perm not in share["permissions"]:
+                    share["permissions"].append(perm)
+                elif not checked and perm in share["permissions"]:
+                    share["permissions"].remove(perm)
+                break
+                
+        try:
+            import toml
+            # 使用CONFIG_PATH而不是controller.config_path
+            from core.config_loader import CONFIG_PATH
+            with open(CONFIG_PATH, "w", encoding='utf-8') as f:
+                toml.dump(config, f)
+            self.controller.running_config = config
+            self.share_model.reload_shares()
+            
+            # 通知共享变更
+            client = self.connection_model.get_local_api_client()
+            if client:
+                client.notify_shares_changed()
+                
+            self.log_presenter.add_log(f"共享 '{share_name}' 的权限已更新。", "🔧")
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"无法保存配置文件: {e}")
+            
+    def _on_remove_share(self, share_name: str):
+        """处理移除共享"""
+        reply = QMessageBox.question(self, "确认移除", f"确定要停止共享 '{share_name}' 吗？",
+                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                     QMessageBox.StandardButton.No)
+        if reply == QMessageBox.StandardButton.No:
+            return
+            
+        config = load_config(force_reload=True)
+        config['shares'] = [s for s in config.get("shares", []) if s.get("name") != share_name]
+        
+        try:
+            import toml
+            # 使用CONFIG_PATH而不是controller.config_path
+            from core.config_loader import CONFIG_PATH
+            with open(CONFIG_PATH, "w", encoding='utf-8') as f:
+                toml.dump(config, f)
+                
+            self.controller.running_config = config
+            self.share_model.reload_shares()
+            self.controller.restart_file_watcher()
+            
+            # 通知共享变更
+            client = self.connection_model.get_local_api_client()
+            if client:
+                client.notify_shares_changed()
+                
+            self.log_presenter.add_log(f"已停止共享: {share_name}", "️")
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"无法保存配置文件: {e}")
+            
+    def _on_upload_file(self, file_paths: List[str], share_name: str, dest_path: str):
+        """处理上传文件"""
+        tasks = self.transfer_manager.create_upload_file_tasks(file_paths, share_name, dest_path)
+        if tasks:
+            # 显示传输列表视图
+            self._show_transfer_dialog(f"上传 {len(file_paths)} 个文件", tasks)
+            
+    def _on_upload_folder(self, folder_path: str, share_name: str, dest_path: str):
+        """处理上传文件夹"""
+        task = self.transfer_manager.create_upload_folder_task(folder_path, share_name, dest_path)
+        if task:
+            # 显示传输列表视图
+            self._show_transfer_dialog("上传文件夹", [task])
+            
+    def _on_download(self, files: List[Dict[str, Any]], share_name: str, remote_path: str, save_dir: str):
+        """处理下载"""
+        tasks = self.transfer_manager.create_download_tasks(files, share_name, remote_path, save_dir)
+        if tasks:
+            # 显示传输列表视图
+            self._show_transfer_dialog(f"下载 {len(files)} 个项目", tasks)
+            
+    def _on_rename(self, old_name: str, new_name: str, share_name: str, path: str):
+        """处理重命名"""
+        client = self.connection_model.get_active_peer_client()
+        if not client:
+            return
+            
+        try:
+            remote_path = f"{path}/{old_name}".replace('//', '/')
+            result = client.rename_file(share_name, remote_path, new_name)
+            
+            if result:
+                self.log_presenter.add_log(f"已重命名: {old_name} -> {new_name}", "✏️")
+                
+                # 刷新文件列表
+                self._refresh_files()
+                
+                # 通知文件变更
+                local_client = self.connection_model.get_local_api_client()
+                if local_client:
+                    # 通知本地服务器文件已更改，它会广播给其他连接的客户端
+                    local_client.notify_file_changed(share_name, path)
+            else:
+                QMessageBox.critical(self, "错误", f"重命名失败: {old_name}", QMessageBox.Ok)
+        except Exception as e:
+            self.log_presenter.add_log(f"重命名时出错: {e}", "❌")
+            QMessageBox.critical(self, "错误", f"重命名失败: {str(e)}", QMessageBox.Ok)
+            
+    def _on_delete(self, file_names: List[str], share_name: str, path: str):
+        """处理删除"""
+        client = self.connection_model.get_active_peer_client()
+        if not client:
+            return
+            
+        success_count = 0
+        error_count = 0
+        
+        for name in file_names:
+            try:
+                remote_path = f"{path}/{name}".replace('//', '/')
+                result = client.delete_file(share_name, remote_path)
+                
+                if result:
+                    self.log_presenter.add_log(f"已删除: {name}", "🗑️")
+                    success_count += 1
+                else:
+                    self.log_presenter.add_log(f"删除失败: {name}", "❌")
+                    error_count += 1
+            except Exception as e:
+                self.log_presenter.add_log(f"删除 {name} 时出错: {e}", "❌")
+                error_count += 1
+                
+        # 刷新文件列表
+        self._refresh_files()
+        
+        # 通知文件变更
+        local_client = self.connection_model.get_local_api_client()
+        if local_client and success_count > 0:
+            # 通知本地服务器文件已更改，它会广播给其他连接的客户端
+            local_client.notify_file_changed(share_name, path)
+        
+        # 显示操作结果
+        if error_count == 0:
+            self.status_bar_label.setText(f"成功删除 {success_count} 个项目")
+        else:
+            self.status_bar_label.setText(f"删除完成: {success_count} 成功, {error_count} 失败")
+            QMessageBox.warning(self, "删除结果", f"成功删除 {success_count} 个项目，{error_count} 个项目删除失败。", QMessageBox.Ok)
+            
+    def _on_transfer_completed(self):
+        """处理传输完成"""
+        # 刷新文件列表
+        QTimer.singleShot(500, self._refresh_files)
+        
+    def _on_transfer_error(self, error_message: str):
+        """处理传输错误"""
+        # 错误已在TransferPresenter中处理
+        pass
+        
+    def _open_settings(self):
+        """打开设置窗口"""
+        dialog = SettingsWindow(self.controller, self)
+        if dialog.exec():
+            self.controller.running_config = load_config(force_reload=True)
+            self.share_model.reload_shares()
+            self.controller.restart_file_watcher()
+            
+            # 通知共享变更
+            client = self.connection_model.get_local_api_client()
+            if client:
+                client.notify_shares_changed()
+                
+            self.log_presenter.add_log("配置已更新。", "⚙️")
+            QMessageBox.information(self, "设置已保存", "设置已成功保存。", QMessageBox.Ok)
+            
+    def _show_about(self):
+        """显示关于对话框"""
+        QMessageBox.about(
+            self,
+            "关于 邻里+",
+            """<b>邻里+ (NetNeighbor Plus) v3.3.0</b>
+            <p>一款基于局域网的、开源的、跨平台文件共享工具。</p>
+            <p><b>核心功能:</b></p>
+            <ul>
+                <li>自动发现局域网内的其他设备</li>
+                <li>支持文件和文件夹的上传与下载</li>
+                <li>灵活的文件夹权限管理 (可读/可下载/可上传)</li>
+                <li>实时文件变更监控与通知</li>
+                <li>跨平台支持 (Windows, macOS, Linux)</li>
+            </ul>
+            <p>感谢您的使用！</p>
+            """
+        )
+        
+    def _on_task_added(self, task_id: str, task_info: Dict[str, Any]):
+        """处理任务添加"""
+        # 处理位置更新请求
+        if task_id == "update_position":
+            self._update_floating_window_position()
+            return
+            
+        # 更新传输状态按钮
+        self._update_transfer_status_button()
+        
+    def _on_task_progress(self, task_id: str, progress: int):
+        """处理任务进度更新"""
+        # 更新传输状态按钮
+        self._update_transfer_status_button()
+        
+    def _on_task_status(self, task_id: str, status: str):
+        """处理任务状态更新"""
+        # 更新传输状态按钮
+        self._update_transfer_status_button()
+        
+    def _on_task_completed(self, task_id: str):
+        """处理任务完成"""
+        # 刷新文件列表
+        QTimer.singleShot(500, self._refresh_files)
+        # 更新传输状态按钮
+        self._update_transfer_status_button()
+        
+    def _on_task_error(self, task_id: str, error_message: str):
+        """处理任务错误"""
+        # 错误已在TransferManager中处理
+        # 更新传输状态按钮
+        self._update_transfer_status_button()
+        
+    def _on_all_tasks_completed(self):
+        """处理所有任务完成"""
+        # 如果没有活动任务，隐藏传输状态按钮
+        task_count = self.floating_transfer_view.get_task_count()
+        if task_count == 0:
+            # 隐藏传输状态按钮
+            self.transfer_status_button.setVisible(False)
+            
+    def _update_transfer_status_button(self):
+        """更新传输状态按钮"""
+        task_count = self.floating_transfer_view.get_task_count()
+        if task_count > 0:
+            self.transfer_status_button.setText(f"传输: {task_count}")
+            self.transfer_status_button.setVisible(True)
+            
+            # 根据是否有活动任务设置不同样式
+            if self.transfer_model.is_transfer_active():
+                self.transfer_status_button.setStyleSheet("""
+                    QPushButton {
+                        border: none;
+                        padding: 2px 8px;
+                        background-color: #4CAF50;
+                        border-radius: 3px;
+                        color: white;
+                        font-weight: bold;
+                    }
+                    QPushButton:hover {
+                        background-color: #45a049;
+                    }
+                """)
+            else:
+                self.transfer_status_button.setStyleSheet("""
+                    QPushButton {
+                        border: none;
+                        padding: 2px 8px;
+                        background-color: #f0f0f0;
+                        border-radius: 3px;
+                        color: #333;
+                    }
+                    QPushButton:hover {
+                        background-color: #e0e0e0;
+                    }
+                """)
+        else:
+            self.transfer_status_button.setVisible(False)
+            
+    def _show_transfer_dialog(self, title: str, tasks: List[Dict[str, Any]]):
+        """显示传输对话框"""
+        # 添加任务
+        self.transfer_manager.add_tasks(title, tasks, silent=False)
+        
+        # 确保传输状态按钮可见
+        self._update_transfer_status_button()
+        
+    def _toggle_transfer_list(self):
+        """切换传输列表视图的显示状态"""
+        if not self.floating_transfer_view.isVisible():
+            # 先设置位置，再显示窗口
+            self._update_floating_window_position()
+            self.floating_transfer_view.setVisible(True)
+        else:
+            self.floating_transfer_view.setVisible(False)
+            
+    def _update_floating_window_position(self):
+        """更新悬浮窗口位置到应用程序右下角"""
+        if self.floating_transfer_view and self.floating_transfer_view.isVisible():
+            # 获取主窗口的位置和大小
+            main_pos = self.mapToGlobal(QPoint(0, 0))
+            main_size = self.size()
+            
+            # 获取悬浮窗口的大小
+            float_size = self.floating_transfer_view.sizeHint()
+            
+            # 计算悬浮窗口的位置（主窗口右下角）
+            float_x = main_pos.x() + main_size.width() - float_size.width() - 20
+            float_y = main_pos.y() + main_size.height() - float_size.height() - 20
+            
+            # 确保位置在屏幕内
+            screen_rect = self.screen().availableGeometry()
+            if float_x < 0:
+                float_x = 10
+            if float_y < 0:
+                float_y = 10
+            if float_x + float_size.width() > screen_rect.width():
+                float_x = screen_rect.width() - float_size.width() - 10
+            if float_y + float_size.height() > screen_rect.height():
+                float_y = screen_rect.height() - float_size.height() - 10
+            
+            # 设置悬浮窗口位置
+            self.floating_transfer_view.move(float_x, float_y)
+            
+            # 确保窗口在前端显示
+            self.floating_transfer_view.raise_()
+            
+    def resizeEvent(self, event):
+        """处理窗口大小变化事件"""
+        super().resizeEvent(event)
+        # 更新悬浮窗口位置
+        self._update_floating_window_position()
+        
+    def moveEvent(self, event):
+        """处理窗口移动事件"""
+        super().moveEvent(event)
+        # 更新悬浮窗口位置
+        self._update_floating_window_position()
+        
+    def closeEvent(self, event: QCloseEvent):
+        """处理窗口关闭事件"""
+        # 检查是否有传输任务正在进行
+        if self.transfer_model.is_transfer_active():
+            reply = QMessageBox.question(
+                self, 
+                "退出确认", 
+                "有文件正在传输，确定要强制退出吗？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
+            )
+            if reply == QMessageBox.StandardButton.No:
+                event.ignore()
+                return
+                
+        self.log_presenter.add_log("应用正在关闭...", "👋")
+        
+        # 停止所有连接
+        self.connection_presenter.stop_all_connections()
+        
+        # 停止后台服务
+        self.controller.stop_all_services()
+        
+        self.log_presenter.add_log("所有服务和线程已停止。应用退出。", "👋")
+        event.accept() 
