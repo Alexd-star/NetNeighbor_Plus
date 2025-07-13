@@ -1,4 +1,4 @@
-# 文件: core/tcp_server.py (最终修复版)
+# 文件: core/tcp_server.py
 
 import asyncio
 import json
@@ -12,14 +12,14 @@ from .config_loader import load_config
 
 def log_server(message, is_error=False):
     """服务器端的日志函数，可区分普通日志和错误日志。"""
-    timestamp = time.strftime('%H:%M:%S')
+    timestamp = time.strftime("%H:%M:%S")
     log_stream = sys.stderr if is_error else sys.stdout
     print(f"[{timestamp}] [TCP_SERVER] {message}", file=log_stream)
 
 
 def get_safe_path_for_tcp(share_name: str, sub_path: str = "/") -> Tuple[str, dict]:
     """安全地解析共享路径，防止路径遍历攻击。"""
-    all_shares = load_config(force_reload=True).get('shares', [])
+    all_shares = load_config(force_reload=True).get("shares", [])
     target_share = next((s for s in all_shares if s["name"] == share_name), None)
     if not target_share:
         raise FileNotFoundError(f"Share '{share_name}' not found")
@@ -29,7 +29,7 @@ def get_safe_path_for_tcp(share_name: str, sub_path: str = "/") -> Tuple[str, di
         raise PermissionError(f"Download permission denied for share '{share_name}'")
 
     base_path = os.path.abspath(target_share["path"])
-    safe_sub_path = os.path.normpath(sub_path.lstrip('/\\'))
+    safe_sub_path = os.path.normpath(sub_path.lstrip("/\\"))
     full_path = os.path.join(base_path, safe_sub_path)
 
     if not os.path.abspath(full_path).startswith(base_path):
@@ -41,7 +41,7 @@ def get_safe_path_for_tcp(share_name: str, sub_path: str = "/") -> Tuple[str, di
 async def _drain_stream(
         proc_stream: asyncio.StreamReader,
         stream_name: str,
-        client_writer: asyncio.StreamWriter = None
+    client_writer: asyncio.StreamWriter = None,
 ):
     """一个通用的协程，用于排干子进程的一个流（stdout 或 stderr）。"""
     while True:
@@ -54,7 +54,10 @@ async def _drain_stream(
                 await client_writer.drain()
             else:
                 # 将工作进程的错误日志以UTF-8解码后打印出来
-                log_server(f"[WORKER_STDERR] {chunk.decode('utf-8', errors='ignore').strip()}", is_error=True)
+                log_server(
+                    f"[WORKER_STDERR] {chunk.decode('utf-8', errors='ignore').strip()}",
+                    is_error=True,
+                )
         except asyncio.CancelledError:
             break
         except Exception as e:
@@ -62,12 +65,11 @@ async def _drain_stream(
             break
 
 
-async def handle_client_connection(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
-    """
-    【最终健壮架构版】处理TCP客户端连接。
-    使用严格的屏障来确保数据完整性，并只调用TAR打包工作进程。
-    """
-    client_address = writer.get_extra_info('peername')
+async def handle_client_connection(
+    reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+):
+    """处理TCP客户端连接。使用严格的屏障来确保数据完整性，并调用TAR打包工作进程。"""
+    client_address = writer.get_extra_info("peername")
     log_server(f"已接受来自 {client_address} 的TCP连接")
 
     proc = None
@@ -76,7 +78,7 @@ async def handle_client_connection(reader: asyncio.StreamReader, writer: asyncio
         if not header_data:
             return
 
-        header = json.loads(header_data.decode('utf-8'))
+        header = json.loads(header_data.decode("utf-8"))
         action = header.get("action")
 
         if action == "download_folder":
@@ -85,33 +87,44 @@ async def handle_client_connection(reader: asyncio.StreamReader, writer: asyncio
             absolute_path, _ = get_safe_path_for_tcp(share_name, remote_path)
 
             if not os.path.isdir(absolute_path):
-                raise FileNotFoundError(f"Folder '{absolute_path}' not found or is not a directory.")
+                raise FileNotFoundError(
+                    f"Folder '{absolute_path}' not found or is not a directory."
+                )
 
             # 响应客户端，表示准备就绪
-            writer.write(json.dumps({"status": "ok"}).encode('utf-8'))
+            writer.write(json.dumps({"status": "ok"}).encode("utf-8"))
             await writer.drain()
 
             # 等待客户端确认可以开始发送数据
             await asyncio.wait_for(reader.read(1024), timeout=10.0)
 
-            # --- 核心修正：确保只调用 tar_worker.py ---
-            worker_script_path = os.path.join(os.path.dirname(__file__), 'tar_worker.py')
+            worker_script_path = os.path.join(
+                os.path.dirname(__file__), "tar_worker.py"
+            )
             if not os.path.exists(worker_script_path):
-                raise FileNotFoundError(f"Worker script '{worker_script_path}' not found!")
+                raise FileNotFoundError(
+                    f"Worker script '{worker_script_path}' not found!"
+                )
 
             env = os.environ.copy()
             env["PYTHONIOENCODING"] = "utf-8"
 
             proc = await asyncio.create_subprocess_exec(
-                sys.executable, worker_script_path, absolute_path,
+                sys.executable,
+                worker_script_path,
+                absolute_path,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env=env
+                env=env,
             )
-            log_server(f"已启动 TAR 打包子进程 [PID: {proc.pid}] for folder '{absolute_path}'")
+            log_server(
+                f"已启动 TAR 打包子进程 [PID: {proc.pid}] for folder '{absolute_path}'"
+            )
 
             # 并发地排干stdout和stderr管道
-            stdout_task = asyncio.create_task(_drain_stream(proc.stdout, "stdout", writer))
+            stdout_task = asyncio.create_task(
+                _drain_stream(proc.stdout, "stdout", writer)
+            )
             stderr_task = asyncio.create_task(_drain_stream(proc.stderr, "stderr"))
 
             # 等待子进程结束，并收集其退出码
@@ -127,13 +140,15 @@ async def handle_client_connection(reader: asyncio.StreamReader, writer: asyncio
                 raise RuntimeError(f"TAR 打包子进程 [PID: {proc.pid}] 执行失败。")
 
     except Exception as e:
-        error_msg = f"处理TCP客户端 {client_address} 时发生错误: {type(e).__name__}: {e}"
+        error_msg = (
+            f"处理TCP客户端 {client_address} 时发生错误: {type(e).__name__}: {e}"
+        )
         log_server(error_msg, is_error=True)
         try:
             # 尝试向客户端发送错误信息
             if not writer.is_closing():
                 error_response = json.dumps({"status": "error", "message": str(e)})
-                writer.write(error_response.encode('utf-8'))
+                writer.write(error_response.encode("utf-8"))
                 await writer.drain()
         except Exception as write_err:
             log_server(f"向客户端发送错误通知时失败: {write_err}", is_error=True)
@@ -160,17 +175,16 @@ async def handle_client_connection(reader: asyncio.StreamReader, writer: asyncio
 async def run_tcp_server(port: int, stop_event: asyncio.Event):
     """启动并管理TCP服务器的生命周期。"""
     try:
-        server = await asyncio.start_server(handle_client_connection, '0.0.0.0', port)
+        server = await asyncio.start_server(handle_client_connection, "0.0.0.0", port)
         addr = server.sockets[0].getsockname()
-        log_server(f'异步TCP高速传输服务已在 {addr} 上启动...')
+        log_server(f"异步TCP高速传输服务已在 {addr} 上启动...")
 
         async with server:
             stop_waiter = asyncio.create_task(stop_event.wait())
             serve_task = asyncio.create_task(server.serve_forever())
             # 等待停止信号或服务器自身任务结束
             done, pending = await asyncio.wait(
-                {stop_waiter, serve_task},
-                return_when=asyncio.FIRST_COMPLETED
+                {stop_waiter, serve_task}, return_when=asyncio.FIRST_COMPLETED
             )
             # 取消所有仍在运行的挂起任务
             for task in pending:

@@ -1,6 +1,7 @@
 """
 设备列表视图类，用于显示在线设备
 """
+
 import re
 from typing import Dict, Any, Optional, Callable
 
@@ -15,16 +16,12 @@ def natural_sort_key(s: str) -> list:
     例如，'v10' 会被转换为 ['v', 10]，'v2' 会被转换为 ['v', 2]。
     这样在比较时，10 会被正确地识别为大于 2。
     """
-    # 改进的自然排序算法，确保数字部分正确排序
     result = []
-    # 先分割字符串，确保数字部分被正确识别
-    parts = re.split(r'(\d+)', s)
+    parts = re.split(r"(\d+)", s)
     for part in parts:
         if part.isdigit():
-            # 数字部分转换为整数
             result.append(int(part))
         else:
-            # 非数字部分转换为小写
             result.append(part.lower())
     return result
 
@@ -65,7 +62,13 @@ class DeviceListView(QWidget):
         """清空设备列表"""
         self.device_list_widget.clear()
         
-    def add_device(self, service_name: str, display_name: str, device_type: str, icon: Optional[QIcon] = None):
+    def add_device(
+        self,
+        service_name: str,
+        display_name: str,
+        device_type: str,
+        icon: Optional[QIcon] = None,
+    ):
         """添加设备到列表"""
         item = QListWidgetItem(f"{display_name}\n类型: {device_type}")
         if icon:
@@ -76,9 +79,8 @@ class DeviceListView(QWidget):
         inserted = False
         for i in range(self.device_list_widget.count()):
             existing_item = self.device_list_widget.item(i)
-            existing_display_name = existing_item.text().split('\n')[0]
+            existing_display_name = existing_item.text().split("\n")[0]
             
-            # 使用自然排序算法比较
             if natural_sort_key(display_name) < natural_sort_key(existing_display_name):
                 self.device_list_widget.insertItem(i, item)
                 inserted = True
@@ -103,11 +105,13 @@ class DeviceListView(QWidget):
         # 使用自然排序对设备进行排序
         sorted_devices = sorted(
             devices.items(),
-            key=lambda item: natural_sort_key(item[0].split('._netneighbor._tcp.local.')[0])
+            key=lambda item: natural_sort_key(
+                item[0].split("._netneighbor._tcp.local.")[0]
+            ),
         )
         
         for service_name, device_data in sorted_devices:
-            display_name = service_name.split('._netneighbor._tcp.local.')[0]
+            display_name = service_name.split("._netneighbor._tcp.local.")[0]
             dev_type = device_data.get("properties", {}).get("dev_type", "未知")
             self.add_device(service_name, display_name, dev_type, device_icon)
             

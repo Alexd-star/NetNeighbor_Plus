@@ -1,20 +1,25 @@
 # 文件: core/web_api.py
-# 描述: [最终修复版] 提供 FastAPI 应用实例，文件夹下载已完全替换为标准的 tarfile 实现。
+# 描述: 提供 FastAPI 应用实例，文件夹下载使用标准的 tarfile 实现。
 
 import asyncio
 import json
 import os
+import shutil
 import tarfile
 import tempfile
-import urllib.parse
 import threading
-import shutil
-from typing import Any, Dict, List, Tuple, Generator
 import time
+import urllib.parse
+from typing import Any, Dict, List, Tuple, Generator
 
 from fastapi import (
-    FastAPI, File, HTTPException, Request, UploadFile,
-    WebSocket, WebSocketDisconnect
+    FastAPI,
+    File,
+    HTTPException,
+    Request,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
 )
 from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
 
@@ -22,11 +27,13 @@ from .config_loader import load_config
 from .discovery import online_devices
 from .tcp_server import run_tcp_server
 
+
 __all__ = ["app", "manager"]
 
 
 class ConnectionManager:
     """管理所有活跃的 WebSocket 连接。"""
+
     def __init__(self):
         self.active_connections: List[WebSocket] = []
 
@@ -62,20 +69,24 @@ async def startup_event():
     loop.create_task(run_tcp_server(tcp_port, tcp_stop_event))
 
 
-def get_safe_path_and_share(share_name: str, sub_path: str = "/") -> Tuple[str, Dict[str, Any]]:
+def get_safe_path_and_share(
+    share_name: str, sub_path: str = "/"
+) -> Tuple[str, Dict[str, Any]]:
     """安全地解析请求的路径, 防止路径遍历, 并返回共享配置。"""
-    all_shares = load_config(force_reload=True).get('shares', [])
+    all_shares = load_config(force_reload=True).get("shares", [])
     target_share = next((s for s in all_shares if s.get("name") == share_name), None)
 
     if not target_share:
         raise HTTPException(status_code=404, detail=f"Share '{share_name}' not found")
 
     base_path = os.path.abspath(target_share["path"])
-    safe_sub_path = os.path.normpath(sub_path.lstrip('/\\'))
+    safe_sub_path = os.path.normpath(sub_path.lstrip("/\\"))
     full_path = os.path.join(base_path, safe_sub_path)
 
     if not os.path.abspath(full_path).startswith(base_path):
-        raise HTTPException(status_code=403, detail="Access denied: Path traversal attempt detected.")
+        raise HTTPException(
+            status_code=403, detail="Access denied: Path traversal attempt detected."
+        )
 
     return full_path, target_share
 
@@ -89,12 +100,9 @@ def iter_folder_as_tar(folder_path: str) -> Generator[bytes, None, None]:
     def writer_thread():
         # 在一个独立的线程中进行写操作，防止阻塞FastAPI的事件循环
         try:
-            with os.fdopen(write_fd, 'wb') as writer_pipe:
-                # 【最终修复】同样在此处明确指定 format=tarfile.GNU_FORMAT
+            with os.fdopen(write_fd, "wb") as writer_pipe:
                 with tarfile.open(
-                    fileobj=writer_pipe,
-                    mode='w|',
-                    format=tarfile.GNU_FORMAT
+                    fileobj=writer_pipe, mode="w|", format=tarfile.GNU_FORMAT
                 ) as tar:
                     tar.add(folder_path, arcname=os.path.basename(folder_path))
         finally:
@@ -106,7 +114,7 @@ def iter_folder_as_tar(folder_path: str) -> Generator[bytes, None, None]:
 
     # 在主线程中从管道的读端读取数据
     try:
-        with os.fdopen(read_fd, 'rb') as reader_pipe:
+        with os.fdopen(read_fd, "rb") as reader_pipe:
             while True:
                 chunk = reader_pipe.read(65536)  # 64KB
                 if not chunk:
@@ -119,7 +127,7 @@ def iter_folder_as_tar(folder_path: str) -> Generator[bytes, None, None]:
 @app.get("/api/v1/download_folder/{share_name}")
 def download_folder(share_name: str, folder_path: str):
     """
-    [最终修复] 以最健壮的 TAR 流式下载文件夹，彻底取代有问题的 zipstream 实现。
+    以TAR流式下载文件夹。
     """
     absolute_path, target_share = get_safe_path_and_share(share_name, folder_path)
 
@@ -129,43 +137,56 @@ def download_folder(share_name: str, folder_path: str):
         raise HTTPException(status_code=404, detail="Folder not found.")
 
     folder_name = os.path.basename(os.path.normpath(absolute_path))
-    encoded_filename = urllib.parse.quote(folder_name, safe='')
-    ascii_fallback_filename = folder_name.encode('ascii', 'ignore').decode('ascii') or "download"
+    encoded_filename = urllib.parse.quote(folder_name, safe="")
+    ascii_fallback_filename = (
+        folder_name.encode("ascii", "ignore").decode("ascii") or "download"
+    )
 
     content_disposition = (
-        f"attachment; filename=\"{ascii_fallback_filename}.tar\"; "
+        f'attachment; filename="{ascii_fallback_filename}.tar"; '
         f"filename*=UTF-8''{encoded_filename}.tar"
     )
-    headers = {'Content-Disposition': content_disposition}
+    headers = {"Content-Disposition": content_disposition}
 
     return StreamingResponse(
         iter_folder_as_tar(absolute_path),
         media_type="application/x-tar",
-        headers=headers
+        headers=headers,
     )
 
 
 # --- 其余API端点保持不变 (为简洁省略) ---
 
+
 @app.get("/api/v1/ping")
 async def ping():
     """简单的ping端点，用于测量延迟"""
     return {"status": "ok", "timestamp": time.time()}
+
+
 @app.websocket("/ws/events")
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     try:
-        while True: await websocket.receive_text()
-    except WebSocketDisconnect: manager.disconnect(websocket)
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+
+
 @app.post("/api/v1/internal/notify_shares_changed")
 async def notify_shares_changed(request: Request):
     try:
-        event_data = {"event": "shares_updated", "device_name": request.app.state.controller.device_name}
+        event_data = {
+            "event": "shares_updated",
+            "device_name": request.app.state.controller.device_name,
+        }
         await manager.broadcast(json.dumps(event_data))
         return {"status": "ok"}
-    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-# 【修复】添加外部API端点，用于客户端通知共享变更
+
 @app.post("/api/v1/notify_shares_changed")
 async def notify_shares_changed_external():
     """外部API端点，用于客户端通知共享变更"""
@@ -175,6 +196,7 @@ async def notify_shares_changed_external():
         return {"status": "ok"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/api/v1/notify_file_changed")
 async def notify_file_changed_external(request: Request):
@@ -189,7 +211,10 @@ async def notify_file_changed_external(request: Request):
         path = data.get("path")
         
         if not share_name or path is None:
-            raise HTTPException(status_code=400, detail="Missing required parameters: share_name or path")
+            raise HTTPException(
+                status_code=400,
+                detail="Missing required parameters: share_name or path",
+            )
             
         # 创建事件键
         event_key = f"{share_name}:{path}"
@@ -206,53 +231,84 @@ async def notify_file_changed_external(request: Request):
         
         # 清理旧事件（超过10秒的事件）
         notify_file_changed_external.last_events = {
-            k: v for k, v in notify_file_changed_external.last_events.items()
+            k: v
+            for k, v in notify_file_changed_external.last_events.items()
             if current_time - v < 10.0
         }
             
-        event_data = {
-            "event": "refresh_files",
-            "share_name": share_name,
-            "path": path
-        }
+        event_data = {"event": "refresh_files", "share_name": share_name, "path": path}
         await manager.broadcast(json.dumps(event_data))
         return {"status": "ok"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.get("/api/v1/peers")
-def get_peers(): return JSONResponse(content=online_devices)
+def get_peers():
+    return JSONResponse(content=online_devices)
+
+
 @app.get("/api/v1/shares")
 def list_shares():
-    shares = load_config(force_reload=True).get('shares', [])
-    return JSONResponse(content=[{"name": s.get("name"), "permissions": s.get("permissions", [])} for s in shares])
+    shares = load_config(force_reload=True).get("shares", [])
+    return JSONResponse(
+        content=[
+            {"name": s.get("name"), "permissions": s.get("permissions", [])}
+            for s in shares
+        ]
+    )
+
+
 @app.get("/api/v1/files/{share_name}")
 def list_files(share_name: str, path: str = "/"):
     req_path, share = get_safe_path_and_share(share_name, path)
-    if "read" not in share.get("permissions", []): raise HTTPException(status_code=403, detail="Read permission denied.")
-    if not os.path.isdir(req_path): raise HTTPException(status_code=404, detail="Directory not found")
+    if "read" not in share.get("permissions", []):
+        raise HTTPException(status_code=403, detail="Read permission denied.")
+    if not os.path.isdir(req_path):
+        raise HTTPException(status_code=404, detail="Directory not found")
     try:
         file_list = []
         for name in os.listdir(req_path):
             try:
                 p = os.path.join(req_path, name)
                 is_dir = os.path.isdir(p)
-                file_list.append({"name": name, "is_dir": is_dir, "size": os.path.getsize(p) if not is_dir else 0})
-            except (OSError, PermissionError): continue
+                file_list.append(
+                    {
+                        "name": name,
+                        "is_dir": is_dir,
+                        "size": os.path.getsize(p) if not is_dir else 0,
+                    }
+                )
+            except (OSError, PermissionError):
+                continue
         return JSONResponse(content=file_list)
-    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/v1/download/{share_name}")
 async def download_file(share_name: str, file_path: str):
     abs_path, share = get_safe_path_and_share(share_name, file_path)
-    if "download" not in share.get("permissions", []): raise HTTPException(status_code=403, detail="Download permission denied.")
-    if not os.path.isfile(abs_path): raise HTTPException(status_code=404, detail="File not found.")
+    if "download" not in share.get("permissions", []):
+        raise HTTPException(status_code=403, detail="Download permission denied.")
+    if not os.path.isfile(abs_path):
+        raise HTTPException(status_code=404, detail="File not found.")
     return FileResponse(abs_path, filename=os.path.basename(abs_path))
+
+
 @app.post("/api/v1/upload/{share_name}")
-async def upload_file(share_name: str, dest_path: str = "/", conflict_action: str = "overwrite", file: UploadFile = File(...)):
+async def upload_file(
+    share_name: str,
+    dest_path: str = "/",
+    conflict_action: str = "overwrite",
+    file: UploadFile = File(...),
+):
     up_dir, share = get_safe_path_and_share(share_name, dest_path)
-    if "upload" not in share.get("permissions", []): raise HTTPException(status_code=403, detail="Upload permission denied.")
+    if "upload" not in share.get("permissions", []):
+        raise HTTPException(status_code=403, detail="Upload permission denied.")
     dest = os.path.join(up_dir, file.filename)
-    if not os.path.abspath(dest).startswith(os.path.abspath(up_dir)): raise HTTPException(status_code=403, detail="Invalid destination filename.")
+    if not os.path.abspath(dest).startswith(os.path.abspath(up_dir)):
+        raise HTTPException(status_code=403, detail="Invalid destination filename.")
     
     # 检查文件是否已存在
     if os.path.exists(dest):
@@ -273,23 +329,34 @@ async def upload_file(share_name: str, dest_path: str = "/", conflict_action: st
     
     try:
         with open(dest, "wb") as buffer:
-            while content := await file.read(1024 * 1024): buffer.write(content)
-    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+            while content := await file.read(1024 * 1024):
+                buffer.write(content)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
     
     # 返回上传结果，包括实际使用的文件名
     return {
         "message": "File uploaded.",
         "filename": os.path.basename(dest),
-        "action": "renamed" if conflict_action == "rename" and os.path.basename(dest) != file.filename else "overwrite"
+        "action": (
+            "renamed"
+            if conflict_action == "rename" and os.path.basename(dest) != file.filename
+            else "overwrite"
+        ),
     }
+
+
 @app.post("/api/v1/create_dir/{share_name}")
 async def create_directory(share_name: str, path: str):
     dir_path, share = get_safe_path_and_share(share_name, path)
-    if "upload" not in share.get("permissions", []): raise HTTPException(status_code=403, detail="Upload permission denied.")
+    if "upload" not in share.get("permissions", []):
+        raise HTTPException(status_code=403, detail="Upload permission denied.")
     try:
         os.makedirs(dir_path, exist_ok=True)
         return {"message": "Directory created."}
-    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.delete("/api/v1/delete/{share_name}")
 async def delete_file(share_name: str, file_path: str):
@@ -300,7 +367,10 @@ async def delete_file(share_name: str, file_path: str):
         
         # 检查权限
         if "delete" not in target_share.get("permissions", []):
-            raise HTTPException(status_code=403, detail="Permission denied: Delete operation not allowed")
+            raise HTTPException(
+                status_code=403,
+                detail="Permission denied: Delete operation not allowed",
+            )
             
         # 执行删除操作
         if os.path.isdir(full_path):
@@ -315,11 +385,13 @@ async def delete_file(share_name: str, file_path: str):
             "event": "refresh_files",
             "share_name": share_name,
             "path": os.path.dirname(file_path),
-            "deleted_files": [{
+            "deleted_files": [
+                {
                 "share_name": share_name,
                 "path": file_path,
-                "is_directory": os.path.isdir(full_path)
-            }]
+                    "is_directory": os.path.isdir(full_path),
+                }
+            ],
         }
         await manager.broadcast(json.dumps(event_data))
         
@@ -328,6 +400,7 @@ async def delete_file(share_name: str, file_path: str):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to delete file: {str(e)}")
+
 
 @app.post("/api/v1/rename/{share_name}")
 async def rename_file(share_name: str, file_path: str, new_name: str):
@@ -338,7 +411,10 @@ async def rename_file(share_name: str, file_path: str, new_name: str):
         
         # 检查权限
         if "rename" not in target_share.get("permissions", []):
-            raise HTTPException(status_code=403, detail="Permission denied: Rename operation not allowed")
+            raise HTTPException(
+                status_code=403,
+                detail="Permission denied: Rename operation not allowed",
+            )
             
         # 获取目录和文件名
         dir_path = os.path.dirname(full_path)
@@ -346,7 +422,9 @@ async def rename_file(share_name: str, file_path: str, new_name: str):
         
         # 检查新名称是否已存在
         if os.path.exists(new_full_path):
-            raise HTTPException(status_code=409, detail="A file or folder with this name already exists")
+            raise HTTPException(
+                status_code=409, detail="A file or folder with this name already exists"
+            )
             
         # 执行重命名操作
         os.rename(full_path, new_full_path)
@@ -355,7 +433,7 @@ async def rename_file(share_name: str, file_path: str, new_name: str):
         event_data = {
             "event": "refresh_files",
             "share_name": share_name,
-            "path": os.path.dirname(file_path)
+            "path": os.path.dirname(file_path),
         }
         await manager.broadcast(json.dumps(event_data))
         
@@ -365,8 +443,14 @@ async def rename_file(share_name: str, file_path: str, new_name: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to rename file: {str(e)}")
 
+
 @app.post("/api/v1/upload_folder_tar/{share_name}")
-async def upload_folder_tar(share_name: str, dest_path: str = "/", conflict_action: str = "overwrite", file: UploadFile = File(...)):
+async def upload_folder_tar(
+    share_name: str,
+    dest_path: str = "/",
+    conflict_action: str = "overwrite",
+    file: UploadFile = File(...),
+):
     """
     处理tar格式的文件夹上传请求。
     接收一个tar文件流，解压到目标路径，并处理文件冲突。
@@ -376,7 +460,7 @@ async def upload_folder_tar(share_name: str, dest_path: str = "/", conflict_acti
         raise HTTPException(status_code=403, detail="Upload permission denied.")
     
     # 创建临时文件保存上传的tar数据
-    temp_tar = tempfile.NamedTemporaryFile(delete=False, suffix='.tar')
+    temp_tar = tempfile.NamedTemporaryFile(delete=False, suffix=".tar")
     temp_tar_path = temp_tar.name
     temp_tar.close()
     
@@ -448,7 +532,11 @@ async def upload_folder_tar(share_name: str, dest_path: str = "/", conflict_acti
         return {
             "message": "Folder uploaded successfully.",
             "folder_name": folder_name,
-            "action": "renamed" if conflict_action == "rename" and folder_name != extracted_items[0] else conflict_action
+            "action": (
+                "renamed"
+                if conflict_action == "rename" and folder_name != extracted_items[0]
+                else conflict_action
+            ),
         }
     
     except Exception as e:
@@ -457,5 +545,5 @@ async def upload_folder_tar(share_name: str, dest_path: str = "/", conflict_acti
         # 清理临时文件和目录
         if os.path.exists(temp_tar_path):
             os.unlink(temp_tar_path)
-        if 'temp_dir' in locals() and os.path.exists(temp_dir):
+        if "temp_dir" in locals() and os.path.exists(temp_dir):
             shutil.rmtree(temp_dir)

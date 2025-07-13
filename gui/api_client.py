@@ -1,16 +1,16 @@
-# 文件: gui/api_client.py (最终架构版)
+# 文件: gui/api_client.py
 
-import os
-import httpx
+import io
 import json
+import os
 import socket
 import tarfile
-import io
-from typing import Optional, Callable, Union
 import threading
+from typing import Optional, Callable, Union
+
+import httpx
 
 
-# ------------------- 新增的 TCP 下载器类 -------------------
 class TcpDownloader:
     """
     一个实现了上下文管理器协议的TCP下载器。
@@ -25,19 +25,21 @@ class TcpDownloader:
             self.sock.connect((host, port))
 
             # 发送请求头
-            self.sock.sendall(json.dumps(request_header).encode('utf-8'))
+            self.sock.sendall(json.dumps(request_header).encode("utf-8"))
 
             # 接收响应头
             response_data = self.sock.recv(1024)
             if not response_data:
                 raise ConnectionAbortedError("Server closed connection unexpectedly.")
 
-            response_header = json.loads(response_data.decode('utf-8'))
+            response_header = json.loads(response_data.decode("utf-8"))
             if response_header.get("status") != "ok":
-                raise ConnectionAbortedError(f"Server error: {response_header.get('message', 'Unknown error')}")
+                raise ConnectionAbortedError(
+                    f"Server error: {response_header.get('message', 'Unknown error')}"
+                )
 
             # 发送准备就绪信号
-            self.sock.sendall(b'ready')
+            self.sock.sendall(b"ready")
             self.sock.settimeout(None)  # 为数据传输取消超时
         except Exception:
             if self.sock:
@@ -62,18 +64,17 @@ class TcpDownloader:
             self.sock.close()
 
 
-# ------------------- 新增的 Tar 上传器类 -------------------
 class TarUploader:
     """
     一个实现了文件夹打包为tar流的上传器。
     它负责将整个文件夹打包为tar格式，并提供流式读取接口。
-    【优化】使用更高效的流式处理，避免一次性加载整个文件夹到内存
     """
+
     def __init__(
             self,
             folder_path: str,
             progress_callback: Optional[Callable[[int], None]] = None,
-            chunk_size: int = 65536  # 64KB
+        chunk_size: int = 65536,  # 64KB
     ):
         self.folder_path = folder_path
         self.progress_callback = progress_callback
@@ -97,21 +98,16 @@ class TarUploader:
     
     def _start_tar_thread(self):
         """在后台线程中启动tar打包过程"""
+
         def tar_worker():
             try:
-                with os.fdopen(self.write_pipe, 'wb') as write_pipe:
+                with os.fdopen(self.write_pipe, "wb") as write_pipe:
                     with tarfile.open(
-                        fileobj=write_pipe,
-                        mode='w|',
-                        format=tarfile.GNU_FORMAT
+                        fileobj=write_pipe, mode="w|", format=tarfile.GNU_FORMAT
                     ) as tar:
                         # 添加文件夹到tar
                         folder_name = os.path.basename(self.folder_path)
-                        tar.add(
-                            self.folder_path, 
-                            arcname=folder_name,
-                            recursive=True
-                        )
+                        tar.add(self.folder_path, arcname=folder_name, recursive=True)
             except Exception as e:
                 print(f"Tar打包过程出错: {e}")
                 
@@ -130,7 +126,7 @@ class TarUploader:
             return chunk
         except Exception as e:
             print(f"读取tar数据时出错: {e}")
-            return b''
+            return b""
     
     def __len__(self):
         """返回tar文件的总大小（估计值）"""
@@ -145,7 +141,7 @@ class TarUploader:
         """确保资源被正确释放"""
         try:
             # 关闭读取管道
-            if hasattr(self, 'read_pipe') and self.read_pipe is not None:
+            if hasattr(self, "read_pipe") and self.read_pipe is not None:
                 os.close(self.read_pipe)
                 self.read_pipe = None
                 
@@ -156,14 +152,12 @@ class TarUploader:
             print(f"关闭TarUploader资源时出错: {e}")
 
 
-# ------------------- UploadStreamer (无需改动) -------------------
 class UploadStreamer:
-    # ... 此类代码保持不变 ...
     def __init__(
             self,
             file_path: str,
             progress_callback: Optional[Callable[[int], None]] = None,
-            chunk_size: int = 4096
+        chunk_size: int = 4096,
     ):
         self.file_path = file_path
         self.total_size = os.path.getsize(file_path)
@@ -212,7 +206,6 @@ class ApiClient:
             print(f"错误: 请求设备列表失败 - {e}")
             return None
             
-    # 【修复】添加get_ping方法，用于测量延迟
     def get_ping(self) -> bool:
         """发送ping请求，用于测量延迟"""
         try:
@@ -253,7 +246,6 @@ class ApiClient:
             print(f"错误: 请求文件列表'{share_name}{path}'失败 - 未知错误: {e}")
             return None
             
-    # 【修复】添加delete_file方法，用于删除文件或文件夹
     def delete_file(self, share_name: str, file_path: str) -> bool:
         """删除远程文件或文件夹"""
         try:
@@ -266,7 +258,6 @@ class ApiClient:
             print(f"删除文件失败: {e}")
             return False
             
-    # 【修复】添加rename_file方法，用于重命名文件或文件夹
     def rename_file(self, share_name: str, file_path: str, new_name: str) -> bool:
         """重命名远程文件或文件夹"""
         try:
@@ -279,12 +270,13 @@ class ApiClient:
             print(f"重命名文件失败: {e}")
             return False
             
-    # 【修复】添加check_folder_exists方法，用于检查文件夹是否存在
-    def check_folder_exists(self, share_name: str, dest_path: str, folder_name: str) -> bool:
+    def check_folder_exists(
+        self, share_name: str, dest_path: str, folder_name: str
+    ) -> bool:
         """检查远程目录中是否已存在同名文件夹"""
         try:
             # 构建完整路径
-            full_path = f"{dest_path}/{folder_name}".replace('//', '/')
+            full_path = f"{dest_path}/{folder_name}".replace("//", "/")
             # 尝试获取该路径的文件列表，如果成功则说明文件夹存在
             files = self.get_files(share_name, full_path)
             return files is not None
@@ -297,11 +289,22 @@ class ApiClient:
         params = {"file_path": file_path}
         return self.client.stream("GET", url, params=params, timeout=None)
 
-
-    def upload_file_stream(self, share_name: str, dest_path: str, uploader: UploadStreamer, conflict_action: str = "overwrite"):
+    def upload_file_stream(
+        self,
+        share_name: str,
+        dest_path: str,
+        uploader: UploadStreamer,
+        conflict_action: str = "overwrite",
+    ):
         url = f"{self.base_url}/api/v1/upload/{share_name}"
         params = {"dest_path": dest_path, "conflict_action": conflict_action}
-        files = {'file': (os.path.basename(uploader.file_path), uploader, 'application/octet-stream')}
+        files = {
+            "file": (
+                os.path.basename(uploader.file_path),
+                uploader,
+                "application/octet-stream",
+            )
+        }
         response = self.client.post(url, params=params, files=files, timeout=None)
         response.raise_for_status()
         return response.json()
@@ -311,8 +314,8 @@ class ApiClient:
         url = f"{self.base_url}/api/v1/upload/{share_name}"
         params = {"dest_path": dest_path, "conflict_action": "check"}
         # 创建一个空文件对象，仅用于检查文件是否存在
-        empty_content = b''
-        files = {'file': (filename, empty_content, 'application/octet-stream')}
+        empty_content = b""
+        files = {"file": (filename, empty_content, "application/octet-stream")}
         try:
             response = self.client.post(url, params=params, files=files, timeout=5.0)
             response.raise_for_status()
@@ -347,10 +350,7 @@ class ApiClient:
         """通知服务器文件已更改"""
         try:
             url = f"{self.base_url}/api/v1/notify_file_changed"
-            data = {
-                "share_name": share_name,
-                "path": path
-            }
+            data = {"share_name": share_name, "path": path}
             response = self.client.post(url, json=data, timeout=5.0)
             response.raise_for_status()
             return True
@@ -359,18 +359,15 @@ class ApiClient:
             return False
 
     def download_folder_tcp(self, share_name: str, remote_path: str) -> TcpDownloader:
-        """
-        连接到对方的高速TCP传输服务。
-        【核心修改】: 此函数现在返回一个 TcpDownloader 的实例。
-        """
-        host = self.base_url.split('//')[1].split(':')[0]
+        """连接到对方的高速TCP传输服务。"""
+        host = self.base_url.split("//")[1].split(":")[0]
 
         peers_data = self.get_peers()
         tcp_port = None
         if peers_data:
             for name, data in peers_data.items():
-                if data['address'] == host:
-                    tcp_port = int(data.get('properties', {}).get('tcp_port', 0))
+                if data["address"] == host:
+                    tcp_port = int(data.get("properties", {}).get("tcp_port", 0))
                     break
 
         if not tcp_port:
@@ -379,20 +376,26 @@ class ApiClient:
         request_header = {
             "action": "download_folder",
             "share_name": share_name,
-            "remote_path": remote_path
+            "remote_path": remote_path,
         }
 
         # 返回一个全新的、管理着TCP连接的下载器对象
         return TcpDownloader(host, tcp_port, request_header)
         
-    def upload_folder_tar(self, share_name: str, dest_path: str, uploader: TarUploader, conflict_action: str = "overwrite"):
+    def upload_folder_tar(
+        self,
+        share_name: str,
+        dest_path: str,
+        uploader: TarUploader,
+        conflict_action: str = "overwrite",
+    ):
         """通过tar流式上传整个文件夹"""
         url = f"{self.base_url}/api/v1/upload_folder_tar/{share_name}"
         params = {"dest_path": dest_path, "conflict_action": conflict_action}
         
         # 使用文件夹名称作为tar文件名
         folder_name = os.path.basename(uploader.folder_path)
-        files = {'file': (f"{folder_name}.tar", uploader, 'application/x-tar')}
+        files = {"file": (f"{folder_name}.tar", uploader, "application/x-tar")}
         
         response = self.client.post(url, params=params, files=files, timeout=None)
         response.raise_for_status()

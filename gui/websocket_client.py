@@ -1,6 +1,7 @@
 """
 WebSocket客户端线程类，用于处理WebSocket连接
 """
+
 import asyncio
 import json
 
@@ -10,7 +11,7 @@ import websockets
 
 class WebSocketClientThread(QThread):
     """在后台线程中处理 WebSocket 连接, 并通过信号与主线程通信。"""
-    
+
     message_received = Signal(str, str)  # 消息内容，来源
 
     def __init__(self, uri: str, source: str):
@@ -30,7 +31,7 @@ class WebSocketClientThread(QThread):
                     print(f"WebSocket ({self.source}) 已连接到 {self.uri}")
                     self.message_received.emit(
                         json.dumps({"event": f"ws_{self.source}_connected"}),
-                        self.source
+                        self.source,
                     )
                     while self._is_running:
                         try:
@@ -49,7 +50,7 @@ class WebSocketClientThread(QThread):
                     print(f"WebSocket ({self.source}) 连接错误: {e}。5秒后重连...")
                     self.message_received.emit(
                         json.dumps({"event": f"ws_{self.source}_disconnected"}),
-                        self.source
+                        self.source,
                     )
                     for _ in range(50):
                         if not self._is_running:
@@ -82,4 +83,4 @@ class WebSocketClientThread(QThread):
             self.loop.call_soon_threadsafe(self.task.cancel)
         if not self.wait(2000):
             print(f"警告: WebSocket ({self.source}) 线程超时，强制终止。")
-            self.terminate() 
+            self.terminate()

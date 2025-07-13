@@ -1,6 +1,7 @@
 """
 Presenter包初始化文件，导出所有Presenter类
 """
+
 from .device_presenter import DevicePresenter
 from .share_presenter import SharePresenter
 from .log_presenter import LogPresenter
@@ -10,11 +11,11 @@ from .connection_presenter import ConnectionPresenter
 from .transfer_presenter import TransferPresenter
 
 __all__ = [
-    'DevicePresenter',
-    'SharePresenter',
-    'LogPresenter',
-    'StatusPresenter',
-    'FileBrowserPresenter',
-    'ConnectionPresenter',
-    'TransferPresenter'
-] 
+    "DevicePresenter",
+    "SharePresenter",
+    "LogPresenter",
+    "StatusPresenter",
+    "FileBrowserPresenter",
+    "ConnectionPresenter",
+    "TransferPresenter",
+]

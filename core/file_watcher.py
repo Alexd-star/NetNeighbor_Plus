@@ -1,5 +1,6 @@
-# 文件: core/file_watcher.py (升级)
+# 文件: core/file_watcher.py
 import time
+
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
@@ -24,13 +25,15 @@ class DebouncedChangeHandler(FileSystemEventHandler):
             return
             
         # 检查是否是删除事件
-        if event.event_type == 'deleted':
+        if event.event_type == "deleted":
             # 记录删除事件
-            self.recent_delete_events.append({
-                'path': event.src_path,
-                'is_directory': event.is_directory,
-                'time': time.time()
-            })
+            self.recent_delete_events.append(
+                {
+                    "path": event.src_path,
+                    "is_directory": event.is_directory,
+                    "time": time.time(),
+                }
+            )
 
         current_time = time.time()
         if current_time - self.last_triggered_time > self.debounce_interval:

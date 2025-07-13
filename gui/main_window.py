@@ -1,6 +1,5 @@
 # 文件: gui/main_window.py
 # 描述: 应用的主窗口，负责UI的整体布局和用户交互逻辑。
-# (已添加实时速度显示, 并修正类型提示以兼容 Python 3.9)
 
 import asyncio
 import json
@@ -14,14 +13,45 @@ from typing import Any, Dict, List, Optional, Union
 
 import toml
 import websockets
-from PySide6.QtCore import QCoreApplication, QSize, Qt, QThread, QTimer, Signal, QMimeData, QMetaObject, Q_ARG
+from PySide6.QtCore import (
+    QCoreApplication,
+    QSize,
+    Qt,
+    QThread,
+    QTimer,
+    Signal,
+    QMimeData,
+    QMetaObject,
+    Q_ARG,
+)
 from PySide6.QtGui import QAction, QFont, QIcon, QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QDialog, QFileDialog, QGroupBox,
-    QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget,
-    QListWidgetItem, QMainWindow, QMenu, QMessageBox, QProgressDialog,
-    QPushButton, QStackedWidget, QStatusBar, QStyle, QTableWidget,
-    QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget, QComboBox, QCheckBox
+    QAbstractItemView,
+    QApplication,
+    QDialog,
+    QFileDialog,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMainWindow,
+    QMenu,
+    QMessageBox,
+    QProgressDialog,
+    QPushButton,
+    QStackedWidget,
+    QStatusBar,
+    QStyle,
+    QTableWidget,
+    QTableWidgetItem,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+    QComboBox,
+    QCheckBox,
 )
 
 from .api_client import ApiClient, UploadStreamer, TarUploader
@@ -36,11 +66,15 @@ def natural_sort_key(s: str) -> list:
     例如，'v10' 会被转换为 ['v', 10]，'v2' 会被转换为 ['v', 2]。
     这样在比较时，10 会被正确地识别为大于 2。
     """
-    return [int(text) if text.isdigit() else text.lower()
-            for text in re.split(r'([0-9]+)', s)]
+    return [
+        int(text) if text.isdigit() else text.lower()
+        for text in re.split(r"([0-9]+)", s)
+    ]
+
 
 class ConnectionThread(QThread):
     """一个专门用于后台网络连接的QThread工作线程。"""
+
     # 定义信号: 成功时发射客户端和共享列表，失败时发射错误信息
     connection_successful = Signal(ApiClient, list)
     connection_failed = Signal(str)
@@ -66,8 +100,10 @@ class ConnectionThread(QThread):
             # 任何其他异常，发射失败信号
             self.connection_failed.emit(str(e))
 
+
 class WebSocketClientThread(QThread):
     """在后台线程中处理 WebSocket 连接, 并通过信号与主线程通信。"""
+
     message_received = Signal(str, str)
 
     def __init__(self, uri: str, source: str):
@@ -87,7 +123,7 @@ class WebSocketClientThread(QThread):
                     print(f"WebSocket ({self.source}) 已连接到 {self.uri}")
                     self.message_received.emit(
                         json.dumps({"event": f"ws_{self.source}_connected"}),
-                        self.source
+                        self.source,
                     )
                     while self._is_running:
                         try:
@@ -106,7 +142,7 @@ class WebSocketClientThread(QThread):
                     print(f"WebSocket ({self.source}) 连接错误: {e}。5秒后重连...")
                     self.message_received.emit(
                         json.dumps({"event": f"ws_{self.source}_disconnected"}),
-                        self.source
+                        self.source,
                     )
                     for _ in range(50):
                         if not self._is_running:
@@ -143,19 +179,16 @@ class WebSocketClientThread(QThread):
 
 
 class WorkerThread(QThread):
-    """
-    通用工作线程, 处理所有耗时文件/文件夹传输任务。
-    【新增】增加了速度计算和信号。
-    """
+    """通用工作线程, 处理所有耗时文件/文件夹传输任务。"""
+
     progress = Signal(int)
-    # --- 【优化1】新增两个信号, 用于更新进度文本和实时速度 ---
     progress_text_update = Signal(str)
     speed_update = Signal(str)
     file_finished = Signal(str)
     all_finished = Signal()
     error = Signal(str)
-    
-    # 新增信号，用于请求用户处理文件冲突
+
+    # 信号，用于请求用户处理文件冲突
     conflict_resolution_needed = Signal(dict, object)
 
     def __init__(self, tasks: List[Dict]):
@@ -165,7 +198,7 @@ class WorkerThread(QThread):
         self._is_running = True
         self.conflict_resolution_result = None
         self.conflict_resolution_event = threading.Event()
-        
+
     def _format_size(self, size_bytes):
         """格式化文件大小为人类可读的形式"""
         if size_bytes < 1024:
@@ -229,12 +262,12 @@ class WorkerThread(QThread):
         for chunk in source_iterator:
             if not self._is_running:
                 raise InterruptedError("Transfer cancelled")
-                
+
             dest_file.write(chunk)
             chunk_size = len(chunk)
             received += chunk_size
             bytes_since_last_update += chunk_size
-            
+
             # 更新速度显示（每0.5秒更新一次）
             current_time = time.time()
             if current_time - last_update_time >= 0.5:
@@ -249,27 +282,26 @@ class WorkerThread(QThread):
 
     def _run_download_file(self, task_info):
         """下载单个文件的具体实现。"""
-        p_client, s_name = task_info['peer_client'], task_info['share_name']
-        r_path, save_p = task_info['remote_path'], task_info['save_path']
+        p_client, s_name = task_info["peer_client"], task_info["share_name"]
+        r_path, save_p = task_info["remote_path"], task_info["save_path"]
         file_name = os.path.basename(save_p)
 
         with p_client.download_file_stream(s_name, r_path) as resp:
             resp.raise_for_status()
-            total = int(resp.headers.get('content-length', 0))
+            total = int(resp.headers.get("content-length", 0))
             with open(save_p, "wb") as f:
                 self._transfer_loop(resp.iter_bytes(chunk_size=8192), f, total)
 
         self.file_finished.emit(f"文件 '{file_name}' 下载完成！")
-
 
     def _run_download_folder_tcp(self, task_info):
         """
         【最终架构版】通过高性能TCP通道下载并打包文件夹。
         使用 'with' 语句来确保连接资源被正确管理。
         """
-        peer_client, share_name = task_info['peer_client'], task_info['share_name']
-        remote_path, save_path = task_info['remote_path'], task_info['save_path']
-        folder_name = task_info['name']
+        peer_client, share_name = task_info["peer_client"], task_info["share_name"]
+        remote_path, save_path = task_info["remote_path"], task_info["save_path"]
+        folder_name = task_info["name"]
 
         self.progress_text_update.emit(f"开始下载 '{folder_name}.zip' (TCP高速模式)...")
 
@@ -291,72 +323,71 @@ class WorkerThread(QThread):
 
     def _run_upload_folder(self, task_info):
         """上传文件夹的具体实现，支持冲突处理。"""
-        local_folder = task_info['local_path']
-        p_client = task_info['peer_client']
-        s_name = task_info['share_name']
-        base_dest = task_info['dest_path']
-        folder_name = task_info['name']
-        conflict_action = task_info.get('conflict_action', 'ask')
-        
+        local_folder = task_info["local_path"]
+        p_client = task_info["peer_client"]
+        s_name = task_info["share_name"]
+        base_dest = task_info["dest_path"]
+        folder_name = task_info["name"]
+        conflict_action = task_info.get("conflict_action", "ask")
+
         # 【修复】添加进度文本更新，让用户知道当前状态
         self.progress_text_update.emit(f"正在准备上传文件夹: {folder_name}")
-        
+
         # 检查文件夹是否已存在
-        if conflict_action == 'ask':
+        if conflict_action == "ask":
             folder_exists = False
             try:
                 # 【修复】使用安全的方式检查文件夹是否存在
-                folder_exists = p_client.check_folder_exists(s_name, base_dest, folder_name)
+                folder_exists = p_client.check_folder_exists(
+                    s_name, base_dest, folder_name
+                )
             except Exception as e:
                 print(f"检查文件夹是否存在时出错: {e}")
                 # 如果检查失败，尝试使用备用方法检查
                 try:
                     # 构建完整路径
-                    full_path = f"{base_dest}/{folder_name}".replace('//', '/')
+                    full_path = f"{base_dest}/{folder_name}".replace("//", "/")
                     # 尝试获取该路径的文件列表，如果成功则说明文件夹存在
                     files = p_client.get_files(s_name, full_path)
                     folder_exists = files is not None
                 except Exception:
                     # 如果两种方法都失败，假设文件夹不存在
                     folder_exists = False
-                
+
             if folder_exists:
                 # 使用冲突解决机制
-                file_info = {
-                    'file_name': folder_name,
-                    'is_folder': True
-                }
-                
+                file_info = {"file_name": folder_name, "is_folder": True}
+
                 # 创建事件对象用于线程同步
                 event = threading.Event()
-                
+
                 # 发射信号请求主线程处理冲突
                 self.conflict_resolution_needed.emit(file_info, event)
-                
+
                 # 等待主线程处理完成
                 event.wait()
-                
+
                 # 获取处理结果
                 conflict_result = self.conflict_resolution_result
-                
+
                 # 重置结果
                 self.conflict_resolution_result = None
-                
+
                 # 根据用户选择设置冲突处理方式
                 if conflict_result.get("action") == "cancelled":
                     # 用户取消了对话框
                     return
-                    
+
                 conflict_action = conflict_result.get("action", "skip")
-        
+
         # 如果用户选择跳过，则直接返回
-        if conflict_action == 'skip':
+        if conflict_action == "skip":
             self.file_finished.emit(f"已跳过上传: {folder_name}")
             return
-            
+
         # 【修复】添加进度更新，计算总大小
         self.progress_text_update.emit(f"正在计算文件夹大小: {folder_name}")
-        
+
         # 计算文件夹总大小，用于进度显示
         total_size = 0
         file_count = 0
@@ -367,37 +398,41 @@ class WorkerThread(QThread):
                     if os.path.isfile(file_path):
                         total_size += os.path.getsize(file_path)
                         file_count += 1
-                        
+
                         # 每处理100个文件更新一次进度，避免大文件夹计算时间过长无反馈
                         if file_count % 100 == 0:
-                            self.progress_text_update.emit(f"正在计算文件夹大小: 已扫描 {file_count} 个文件...")
+                            self.progress_text_update.emit(
+                                f"正在计算文件夹大小: 已扫描 {file_count} 个文件..."
+                            )
         except Exception as e:
             print(f"计算文件夹大小时出错: {e}")
             # 如果无法计算大小，则使用0表示未知
             total_size = 0
-            
+
         # 【优化】添加文件数量信息
-        self.progress_text_update.emit(f"开始上传文件夹: {folder_name} (共 {file_count} 个文件, {self._format_size(total_size)})")
+        self.progress_text_update.emit(
+            f"开始上传文件夹: {folder_name} (共 {file_count} 个文件, {self._format_size(total_size)})"
+        )
         QThread.msleep(100)  # 短暂延迟，确保UI更新
-            
+
         # 设置进度回调函数
         sent_bytes = 0
         last_update_time = time.time()
         bytes_since_last_update = 0
         start_time = time.time()
-        
+
         def progress_callback(chunk_len):
             nonlocal sent_bytes, last_update_time, bytes_since_last_update, start_time
             sent_bytes += chunk_len
             bytes_since_last_update += chunk_len
-            
+
             current_time = time.time()
             time_delta = current_time - last_update_time
             if time_delta >= 0.5:
                 # 计算速度
                 speed = bytes_since_last_update / time_delta
                 self.speed_update.emit(f"{self._format_size(speed)}/s")
-                
+
                 # 计算剩余时间
                 elapsed_time = current_time - start_time
                 if sent_bytes > 0 and total_size > 0:
@@ -405,7 +440,7 @@ class WorkerThread(QThread):
                     if progress_percent > 0:
                         estimated_total_time = elapsed_time / progress_percent
                         remaining_time = estimated_total_time - elapsed_time
-                        
+
                         # 格式化剩余时间
                         if remaining_time < 60:
                             time_str = f"{int(remaining_time)}秒"
@@ -413,36 +448,40 @@ class WorkerThread(QThread):
                             time_str = f"{int(remaining_time / 60)}分钟{int(remaining_time % 60)}秒"
                         else:
                             time_str = f"{int(remaining_time / 3600)}小时{int((remaining_time % 3600) / 60)}分钟"
-                        
+
                         # 更新进度文本，包含剩余时间
                         self.progress_text_update.emit(
                             f"上传文件夹: {folder_name} ({self._format_size(sent_bytes)}/{self._format_size(total_size)}, 剩余时间: {time_str})"
                         )
-                
+
                 last_update_time = current_time
                 bytes_since_last_update = 0
-            
+
             if total_size > 0:
                 self.progress.emit(int((sent_bytes / total_size) * 100))
-        
+
         try:
             # 【优化】添加tar包装开始提示
             self.progress_text_update.emit(f"正在打包文件夹: {folder_name}")
-            
+
             # 使用TarUploader将文件夹打包并上传
-            with TarUploader(local_folder, progress_callback=progress_callback) as uploader:
+            with TarUploader(
+                local_folder, progress_callback=progress_callback
+            ) as uploader:
                 # 【优化】添加上传开始提示
                 self.progress_text_update.emit(f"开始传输文件夹: {folder_name}")
-                
+
                 # 上传前发送进度更新
                 self.progress.emit(0)
-                
+
                 # 执行上传
-                result = p_client.upload_folder_tar(s_name, base_dest, uploader, conflict_action)
-            
+                result = p_client.upload_folder_tar(
+                    s_name, base_dest, uploader, conflict_action
+                )
+
             # 重置速度显示
             self.speed_update.emit("")
-            
+
             # 【优化】添加完成提示，包含总上传大小和时间
             total_time = time.time() - start_time
             if total_time < 60:
@@ -450,19 +489,23 @@ class WorkerThread(QThread):
             elif total_time < 3600:
                 time_str = f"{int(total_time / 60)}分钟{int(total_time % 60)}秒"
             else:
-                time_str = f"{int(total_time / 3600)}小时{int((total_time % 3600) / 60)}分钟"
-                
+                time_str = (
+                    f"{int(total_time / 3600)}小时{int((total_time % 3600) / 60)}分钟"
+                )
+
             self.progress_text_update.emit(
                 f"文件夹 '{folder_name}' 上传完成 ({self._format_size(total_size)}, 耗时: {time_str})"
             )
-            
+
             # 【优化】添加延迟，确保UI更新
             QThread.msleep(100)
-            
+
             # 根据上传结果显示不同的消息
             if result.get("action") == "renamed":
                 new_folder_name = result.get("folder_name", folder_name)
-                self.file_finished.emit(f"文件夹 '{folder_name}' 已重命名为 '{new_folder_name}' 并上传成功。")
+                self.file_finished.emit(
+                    f"文件夹 '{folder_name}' 已重命名为 '{new_folder_name}' 并上传成功。"
+                )
             elif result.get("action") == "skipped":
                 self.file_finished.emit(f"已跳过上传: {folder_name}")
             elif result.get("action") == "merge":
@@ -476,56 +519,56 @@ class WorkerThread(QThread):
 
     def _run_upload_file_internal(self, task_info):
         """上传单个文件的内部实现，不发送完成消息。"""
-        local_path, p_client = task_info['local_path'], task_info['peer_client']
-        s_name, dest = task_info['share_name'], task_info['dest_path']
+        local_path, p_client = task_info["local_path"], task_info["peer_client"]
+        s_name, dest = task_info["share_name"], task_info["dest_path"]
         file_name = os.path.basename(local_path)
-        conflict_action = task_info.get('conflict_action', 'ask')  # 默认询问用户
+        conflict_action = task_info.get("conflict_action", "ask")  # 默认询问用户
 
         # 检查文件是否已存在
-        if conflict_action == 'ask':
+        if conflict_action == "ask":
             # 检查文件是否存在
             file_exists = False
             try:
                 file_exists = p_client.check_file_exists(s_name, dest, file_name)
             except Exception as e:
                 print(f"检查文件是否存在时出错: {e}")
-                
+
             if file_exists:
                 # 使用新的冲突解决机制
-                file_info = {
-                    'file_name': file_name,
-                    'is_folder': False
-                }
-                
+                file_info = {"file_name": file_name, "is_folder": False}
+
                 # 创建事件对象用于线程同步
                 event = threading.Event()
-                
+
                 # 发射信号请求主线程处理冲突
                 self.conflict_resolution_needed.emit(file_info, event)
-                
+
                 # 等待主线程处理完成
                 event.wait()
-                
+
                 # 获取处理结果
                 conflict_result = self.conflict_resolution_result
-                
+
                 # 重置结果
                 self.conflict_resolution_result = None
-                
+
                 # 根据用户选择设置冲突处理方式
                 if conflict_result.get("action") == "cancelled":
                     # 用户取消了对话框
                     return {"status": "cancelled"}
-                    
+
                 conflict_action = conflict_result.get("action", "skip")
-                
+
                 # 如果用户选择应用到所有冲突，更新任务信息
                 if conflict_result.get("apply_to_all"):
                     # 更新所有后续任务的冲突处理方式
                     for task in self.tasks:
-                        if (task.get("type") == "upload_file" or task.get("type") == "upload_file_silent") and not task.get("processed", False):
+                        if (
+                            task.get("type") == "upload_file"
+                            or task.get("type") == "upload_file_silent"
+                        ) and not task.get("processed", False):
                             task["conflict_action"] = conflict_action
-                
+
                 # 如果用户选择跳过，直接返回
                 if conflict_action == "skip":
                     return {"status": "skipped"}
@@ -557,27 +600,33 @@ class WorkerThread(QThread):
                 self.progress.emit(int((sent_bytes / total_size) * 100))
 
         try:
-            with UploadStreamer(local_path, progress_callback=progress_callback) as uploader:
-                result = p_client.upload_file_stream(s_name, dest, uploader, conflict_action)
+            with UploadStreamer(
+                local_path, progress_callback=progress_callback
+            ) as uploader:
+                result = p_client.upload_file_stream(
+                    s_name, dest, uploader, conflict_action
+                )
 
             self.speed_update.emit("")
             # 返回上传结果
             return result
         except Exception as e:
             raise Exception(f"上传文件时出错: {e}")
-        
+
     def _run_upload_file(self, task_info):
         """上传单个文件的具体实现。"""
-        local_path = task_info['local_path']
+        local_path = task_info["local_path"]
         file_name = os.path.basename(local_path)
-        
+
         # 调用内部实现
         result = self._run_upload_file_internal(task_info)
-        
+
         # 根据上传结果显示不同的消息
         if result.get("action") == "renamed":
             new_filename = result.get("filename", file_name)
-            self.file_finished.emit(f"文件 '{file_name}' 已重命名为 '{new_filename}' 并上传成功。")
+            self.file_finished.emit(
+                f"文件 '{file_name}' 已重命名为 '{new_filename}' 并上传成功。"
+            )
         elif result.get("action") == "skipped":
             self.file_finished.emit(f"已跳过上传: {file_name}")
         else:
@@ -592,7 +641,7 @@ class WorkerThread(QThread):
             return f"{size_bytes} B"
 
         # KB, MB, GB, TB
-        power_labels = ('KB', 'MB', 'GB', 'TB')
+        power_labels = ("KB", "MB", "GB", "TB")
         i = int(math.floor(math.log(size_bytes, 1024)))
         # 确保索引在元组范围内
         i = min(i - 1, len(power_labels) - 1)
@@ -604,13 +653,13 @@ class WorkerThread(QThread):
 
 class FileTableWidget(QTableWidget):
     """自定义表格控件，支持拖拽上传并显示视觉反馈"""
-    
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAcceptDrops(True)
         self.main_window = None
         self.drop_overlay = None
-        
+
     def dragEnterEvent(self, event: QDragEnterEvent):
         """处理拖拽进入事件，无条件接受拖拽"""
         # 只检查是否是文件或文件夹，不检查权限
@@ -620,7 +669,7 @@ class FileTableWidget(QTableWidget):
             self.showDropOverlay()
         else:
             event.ignore()
-            
+
     def dragMoveEvent(self, event):
         """处理拖拽移动事件，始终接受拖拽"""
         # 只要是文件或文件夹，就接受拖拽
@@ -628,57 +677,65 @@ class FileTableWidget(QTableWidget):
             event.accept()
         else:
             event.ignore()
-            
+
     def dragLeaveEvent(self, event):
         """处理拖拽离开事件，隐藏视觉反馈"""
         self.hideDropOverlay()
         event.accept()
-            
+
     def dropEvent(self, event: QDropEvent):
         """处理拖拽释放事件，在此处检查权限"""
         self.hideDropOverlay()
-        
+
         if not event.mimeData().hasUrls():
             event.ignore()
             return
-            
+
         # 获取所有拖拽的URL
         urls = event.mimeData().urls()
         if not urls:
             event.ignore()
             return
-            
+
         # 在释放时检查是否有上传权限
         if not self.main_window:
             event.ignore()
             return
-            
+
         current_share = self.main_window.share_selector_combo.currentText()
         if not current_share:
             event.ignore()
             self.main_window.add_log_message("请先选择一个共享文件夹", "⚠️")
             return
-            
+
         # 检查是否有权限上传
-        shares = self.main_window.active_peer_client.get_shares() if self.main_window.active_peer_client else []
+        shares = (
+            self.main_window.active_peer_client.get_shares()
+            if self.main_window.active_peer_client
+            else []
+        )
         has_upload_permission = False
         for share in shares:
-            if share.get('name') == current_share and "upload" in share.get('permissions', []):
+            if share.get("name") == current_share and "upload" in share.get(
+                "permissions", []
+            ):
                 has_upload_permission = True
                 break
-                
+
         if not has_upload_permission:
             event.ignore()
-            self.main_window.add_log_message(f"您没有权限上传到 '{current_share}' 共享", "⚠️")
+            self.main_window.add_log_message(
+                f"您没有权限上传到 '{current_share}' 共享", "⚠️"
+            )
             return
-            
+
         # 接受事件
         event.accept()
-        
+
         # 处理上传
         if self.main_window:
             self.main_window.process_dropped_items(urls)
-            
+
     def showDropOverlay(self):
         """显示全屏拖拽覆盖层"""
         if self.drop_overlay is None:
@@ -686,7 +743,8 @@ class FileTableWidget(QTableWidget):
             self.drop_overlay = QLabel(self.viewport())
             self.drop_overlay.setAlignment(Qt.AlignCenter)
             self.drop_overlay.setText("拖放文件或文件夹到此处上传")
-            self.drop_overlay.setStyleSheet("""
+            self.drop_overlay.setStyleSheet(
+                """
                 background-color: rgba(200, 200, 255, 180);
                 border: 2px dashed #8080FF;
                 border-radius: 8px;
@@ -694,23 +752,28 @@ class FileTableWidget(QTableWidget):
                 font-size: 16px;
                 font-weight: bold;
                 padding: 20px;
-            """)
-        
+            """
+            )
+
         # 确保覆盖层大小正确
-        self.drop_overlay.setGeometry(0, 0, self.viewport().width(), self.viewport().height())
+        self.drop_overlay.setGeometry(
+            0, 0, self.viewport().width(), self.viewport().height()
+        )
         self.drop_overlay.show()
         self.drop_overlay.raise_()  # 确保覆盖层在最上层
-            
+
     def hideDropOverlay(self):
         """隐藏拖拽覆盖层"""
         if self.drop_overlay is not None:
             self.drop_overlay.hide()
-            
+
     def resizeEvent(self, event):
         """处理大小变化事件，调整拖拽覆盖层大小"""
         super().resizeEvent(event)
         if self.drop_overlay is not None and self.drop_overlay.isVisible():
-            self.drop_overlay.setGeometry(0, 0, self.viewport().width(), self.viewport().height())
+            self.drop_overlay.setGeometry(
+                0, 0, self.viewport().width(), self.viewport().height()
+            )
 
 
 class MainWindow(QMainWindow):
@@ -747,7 +810,7 @@ class MainWindow(QMainWindow):
         self.ui_update_timer.setSingleShot(True)
         self.ui_update_timer.setInterval(150)
         self.ui_update_timer.timeout.connect(self._process_device_list_updates)
-        
+
         # 3. 创建一个周期性定时器，用于定期与后端同步设备状态
         self.device_sync_timer = QTimer(self)
         self.device_sync_timer.setInterval(3000)  # 每3秒同步一次
@@ -757,9 +820,7 @@ class MainWindow(QMainWindow):
         self._load_icons()
         self._setup_ui()
         self.update_my_shares_list()
-        self.controller.device_info_updated.connect(
-            self.update_local_status_display
-        )
+        self.controller.device_info_updated.connect(self.update_local_status_display)
 
     # ... 省略部分未改动的函数 ...
 
@@ -769,7 +830,9 @@ class MainWindow(QMainWindow):
         [最终修复] 修正对文件夹下载任务的判断逻辑，并增加提示文本。
         """
         if self.worker_thread and self.worker_thread.isRunning():
-            QMessageBox.warning(self, "任务正在进行", "已有文件在传输中，请稍后重试。", QMessageBox.Ok)
+            QMessageBox.warning(
+                self, "任务正在进行", "已有文件在传输中，请稍后重试。", QMessageBox.Ok
+            )
             return
 
         self.is_transfer_active = True
@@ -777,9 +840,10 @@ class MainWindow(QMainWindow):
         self.progress_dialog.setWindowTitle(progress_title)
         self.progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
 
-
         # 1. 正确检查任务列表中是否包含任何 "download_folder_tcp" 类型的任务
-        is_downloading_folder = any(task.get("type") == "download_folder_tcp" for task in tasks)
+        is_downloading_folder = any(
+            task.get("type") == "download_folder_tcp" for task in tasks
+        )
 
         if is_downloading_folder:
             # 2. 如果是，则设置进度条为不确定模式（滚动条）
@@ -796,55 +860,63 @@ class MainWindow(QMainWindow):
 
         self.worker_thread = WorkerThread(tasks)
         self.worker_thread.progress.connect(self.progress_dialog.setValue)
-        self.worker_thread.progress_text_update.connect(self.on_worker_progress_text_update)
+        self.worker_thread.progress_text_update.connect(
+            self.on_worker_progress_text_update
+        )
         self.worker_thread.speed_update.connect(self.on_worker_speed_update)
         self.worker_thread.file_finished.connect(self.on_worker_file_finished)
         self.worker_thread.all_finished.connect(self.on_worker_all_finished)
         self.worker_thread.error.connect(self.on_worker_error)
         # 连接冲突解决信号
-        self.worker_thread.conflict_resolution_needed.connect(self.handle_conflict_resolution)
+        self.worker_thread.conflict_resolution_needed.connect(
+            self.handle_conflict_resolution
+        )
 
         self.progress_dialog.canceled.connect(self.worker_thread.stop)
         self.worker_thread.start()
-        
+
     def handle_conflict_resolution(self, file_info: dict, event_obj: object):
         """处理文件冲突解决请求，在主线程中显示对话框"""
         try:
-            file_name = file_info.get('file_name', '未知文件')
-            is_folder = file_info.get('is_folder', False)
-            
+            file_name = file_info.get("file_name", "未知文件")
+            is_folder = file_info.get("is_folder", False)
+
             # 创建对话框
             msg_box = QMessageBox(self)
             msg_box.setWindowTitle("文件冲突")
-            
+
             if is_folder:
                 msg_box.setText(f"文件夹 '{file_name}' 已存在于目标位置。")
-                msg_box.setStandardButtons(QMessageBox.StandardButton.Yes | 
-                                          QMessageBox.StandardButton.No | 
-                                          QMessageBox.StandardButton.Cancel)
+                msg_box.setStandardButtons(
+                    QMessageBox.StandardButton.Yes
+                    | QMessageBox.StandardButton.No
+                    | QMessageBox.StandardButton.Cancel
+                )
                 msg_box.setButtonText(QMessageBox.StandardButton.Yes, "合并内容")
                 msg_box.setButtonText(QMessageBox.StandardButton.No, "重命名")
                 msg_box.setButtonText(QMessageBox.StandardButton.Cancel, "跳过")
             else:
                 msg_box.setText(f"文件 '{file_name}' 已存在于目标位置。")
                 msg_box.setInformativeText("请选择如何处理此冲突：")
-                msg_box.setStandardButtons(QMessageBox.StandardButton.Yes | 
-                                          QMessageBox.StandardButton.No | 
-                                          QMessageBox.StandardButton.Cancel)
+                msg_box.setStandardButtons(
+                    QMessageBox.StandardButton.Yes
+                    | QMessageBox.StandardButton.No
+                    | QMessageBox.StandardButton.Cancel
+                )
                 msg_box.setButtonText(QMessageBox.StandardButton.Yes, "覆盖")
                 msg_box.setButtonText(QMessageBox.StandardButton.No, "重命名")
                 msg_box.setButtonText(QMessageBox.StandardButton.Cancel, "跳过")
-                
+
                 # 添加"应用到所有冲突"复选框
                 apply_to_all_cb = QCheckBox("应用到所有冲突")
                 msg_box.setCheckBox(apply_to_all_cb)
-            
+
             # 显示对话框并获取用户选择
             result = msg_box.exec()
-            
+
             # 处理结果
             resolution = {}
-            
+
             if result == QMessageBox.StandardButton.Yes:
                 resolution["action"] = "merge" if is_folder else "overwrite"
             elif result == QMessageBox.StandardButton.No:
@@ -853,15 +925,15 @@ class MainWindow(QMainWindow):
                 resolution["action"] = "skip"
             else:
                 resolution["action"] = "cancelled"
-                
+
             # 如果有"应用到所有冲突"选项并且被选中
             if not is_folder and apply_to_all_cb.isChecked():
                 resolution["apply_to_all"] = True
-                
+
             # 设置结果并通知工作线程
             self.worker_thread.conflict_resolution_result = resolution
             event_obj.set()
-            
+
         except Exception as e:
             print(f"处理冲突对话框时出错: {e}")
             # 设置默认结果并通知工作线程
@@ -873,7 +945,7 @@ class MainWindow(QMainWindow):
         """当工作线程更新进度文本时调用的槽函数。"""
         self._progress_label_text = text
         # 同时更新速度显示
-        current_speed_label = getattr(self, '_current_speed_label', '')
+        current_speed_label = getattr(self, "_current_speed_label", "")
         self.progress_dialog.setLabelText(
             f"{self._progress_label_text}\n{current_speed_label}"
         )
@@ -895,7 +967,7 @@ class MainWindow(QMainWindow):
         if size_bytes < 1024:
             return f"{size_bytes} B"
 
-        power_labels = ('KB', 'MB', 'GB', 'TB')
+        power_labels = ("KB", "MB", "GB", "TB")
         i = int(math.floor(math.log(size_bytes, 1024)))
         i = min(i - 1, len(power_labels) - 1)
 
@@ -915,7 +987,7 @@ class MainWindow(QMainWindow):
         self.populate_initial_devices()
         # 启动设备同步定时器
         self.device_sync_timer.start()
-        
+
         # 【修复】添加初始化完成的提示，更新状态栏
         self.status_bar_label.setText("初始化完成，系统就绪")
         self.add_log_message("系统初始化完成", "✅")
@@ -934,12 +1006,18 @@ class MainWindow(QMainWindow):
         style = self.style()
         self.folder_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon)
         self.file_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_FileIcon)
-        self.upload_folder_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogNewFolder)
-        self.upload_file_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogToParent)
+        self.upload_folder_icon = self.style().standardIcon(
+            QStyle.StandardPixmap.SP_FileDialogNewFolder
+        )
+        self.upload_file_icon = self.style().standardIcon(
+            QStyle.StandardPixmap.SP_FileDialogToParent
+        )
         self.back_icon = style.standardIcon(QStyle.StandardPixmap.SP_ArrowLeft)
         self.upload_icon = style.standardIcon(QStyle.StandardPixmap.SP_ArrowUp)
         self.download_icon = style.standardIcon(QStyle.StandardPixmap.SP_ArrowDown)
-        self.settings_icon = style.standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView)
+        self.settings_icon = style.standardIcon(
+            QStyle.StandardPixmap.SP_FileDialogDetailedView
+        )
         self.help_icon = style.standardIcon(QStyle.StandardPixmap.SP_DialogHelpButton)
         self.device_icon = style.standardIcon(QStyle.StandardPixmap.SP_DriveNetIcon)
 
@@ -947,7 +1025,9 @@ class MainWindow(QMainWindow):
         """设置主窗口的基本属性。"""
         self.setWindowTitle("邻里+ (NetNeighbor Plus)")
         self.setGeometry(100, 100, 1200, 700)
-        self.setWindowIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon))
+        self.setWindowIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon)
+        )
         try:
             center = self.screen().availableGeometry().center()
             frame = self.frameGeometry()
@@ -1027,8 +1107,12 @@ class MainWindow(QMainWindow):
         my_shares_header_layout.addWidget(self.manage_shares_button)
         left_panel_layout.addLayout(my_shares_header_layout)
         self.my_shares_list_widget = QListWidget()
-        self.my_shares_list_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.my_shares_list_widget.customContextMenuRequested.connect(self.show_my_shares_context_menu)
+        self.my_shares_list_widget.setContextMenuPolicy(
+            Qt.ContextMenuPolicy.CustomContextMenu
+        )
+        self.my_shares_list_widget.customContextMenuRequested.connect(
+            self.show_my_shares_context_menu
+        )
         self.my_shares_list_widget.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         left_panel_layout.addWidget(self.my_shares_list_widget, stretch=2)
         left_panel_layout.addWidget(QLabel("<h4>事件日志</h4>"))
@@ -1044,7 +1128,9 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(10, 10, 0, 0)
         toolbar_layout = QHBoxLayout()
         self.share_selector_combo = QComboBox()
-        self.share_selector_combo.currentIndexChanged.connect(self.handle_share_selection_change)
+        self.share_selector_combo.currentIndexChanged.connect(
+            self.handle_share_selection_change
+        )
         self.back_button = QPushButton(self.back_icon, "返回")
         self.back_button.setToolTip("返回上一级目录")
         self.back_button.clicked.connect(self.go_back_directory)
@@ -1056,13 +1142,17 @@ class MainWindow(QMainWindow):
         self.upload_button.setToolTip("向当前远程路径上传文件或文件夹")
         upload_menu = QMenu(self)
         upload_files_action = QAction(self.upload_file_icon, "上传文件...", self)
-        upload_files_action.triggered.connect(lambda: self.handle_upload_action(is_folder=False))
+        upload_files_action.triggered.connect(
+            lambda: self.handle_upload_action(is_folder=False)
+        )
         upload_folder_action = QAction(self.upload_folder_icon, "上传文件夹...", self)
-        upload_folder_action.triggered.connect(lambda: self.handle_upload_action(is_folder=True))
+        upload_folder_action.triggered.connect(
+            lambda: self.handle_upload_action(is_folder=True)
+        )
         upload_menu.addAction(upload_files_action)
         upload_menu.addAction(upload_folder_action)
         self.upload_button.setMenu(upload_menu)
-        
+
         self.download_button = QPushButton(self.download_icon, "下载")
         self.download_button.setToolTip("下载选中的文件或文件夹")
         self.download_button.clicked.connect(self.handle_download_action)
@@ -1079,24 +1169,32 @@ class MainWindow(QMainWindow):
         self.file_table_widget = FileTableWidget(self)
         self.file_table_widget.setColumnCount(4)
         self.file_table_widget.setHorizontalHeaderLabels(["", "文件名", "类型", "大小"])
-        self.file_table_widget.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        self.file_table_widget.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.file_table_widget.setSelectionMode(
+            QAbstractItemView.SelectionMode.ExtendedSelection
+        )
+        self.file_table_widget.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers
+        )
         header = self.file_table_widget.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
-        self.file_table_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.file_table_widget.customContextMenuRequested.connect(self.show_file_context_menu)
+        self.file_table_widget.setContextMenuPolicy(
+            Qt.ContextMenuPolicy.CustomContextMenu
+        )
+        self.file_table_widget.customContextMenuRequested.connect(
+            self.show_file_context_menu
+        )
         self.file_table_widget.itemDoubleClicked.connect(self.on_item_double_clicked)
         self.file_table_widget.setAlternatingRowColors(True)
         self.file_table_widget.setShowGrid(False)
         self.file_table_widget.verticalHeader().setVisible(False)
         self.file_table_widget.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        
+
         # 设置文件表格的主窗口引用和拖拽处理
         self.file_table_widget.main_window = self
-        
+
         layout.addWidget(self.file_table_widget)
         return page
 
@@ -1130,39 +1228,55 @@ class MainWindow(QMainWindow):
         """当控制器信息更新时，刷新UI上的本机状态。"""
         device_name = self.controller.device_name
         self.device_name_label.setText(f"<b>设备名:</b> {device_name}")
-        device_type = self.controller.device_properties.get('dev_type', '未知')
+        device_type = self.controller.device_properties.get("dev_type", "未知")
         self.device_type_label.setText(f"<b>类型:</b> {device_type}")
 
     def show_my_shares_context_menu(self, pos):
         """显示本机共享列表的右键菜单。"""
         item = self.my_shares_list_widget.itemAt(pos)
-        if not item or item.text() == "无共享文件夹": return
-        share_name = item.text().split(' (')[0]
-        all_shares = load_config(force_reload=True).get('shares', [])
-        target_share = next((s for s in all_shares if s.get("name") == share_name), None)
-        if not target_share: return
+        if not item or item.text() == "无共享文件夹":
+            return
+        share_name = item.text().split(" (")[0]
+        all_shares = load_config(force_reload=True).get("shares", [])
+        target_share = next(
+            (s for s in all_shares if s.get("name") == share_name), None
+        )
+        if not target_share:
+            return
         menu = QMenu()
         permissions_menu = menu.addMenu("设置权限")
         current_perms = target_share.get("permissions", [])
         dl_action = QAction("可下载", self, checkable=True)
         dl_action.setChecked("download" in current_perms)
         dl_action.toggled.connect(
-            lambda checked: self._handle_local_share_permission_change(share_name, "download", checked))
+            lambda checked: self._handle_local_share_permission_change(
+                share_name, "download", checked
+            )
+        )
         permissions_menu.addAction(dl_action)
         ul_action = QAction("可上传", self, checkable=True)
         ul_action.setChecked("upload" in current_perms)
         ul_action.toggled.connect(
-            lambda checked: self._handle_local_share_permission_change(share_name, "upload", checked))
+            lambda checked: self._handle_local_share_permission_change(
+                share_name, "upload", checked
+            )
+        )
         permissions_menu.addAction(ul_action)
         del_action = QAction("可删除", self, checkable=True)
         del_action.setChecked("delete" in current_perms)
         del_action.toggled.connect(
-            lambda checked: self._handle_local_share_permission_change(share_name, "delete", checked))
+            lambda checked: self._handle_local_share_permission_change(
+                share_name, "delete", checked
+            )
+        )
         permissions_menu.addAction(del_action)
         rename_action = QAction("可重命名", self, checkable=True)
         rename_action.setChecked("rename" in current_perms)
         rename_action.toggled.connect(
-            lambda checked: self._handle_local_share_permission_change(share_name, "rename", checked))
+            lambda checked: self._handle_local_share_permission_change(
+                share_name, "rename", checked
+            )
+        )
         permissions_menu.addAction(rename_action)
         menu.addSeparator()
         remove_action = QAction("移除此共享", self)
@@ -1170,38 +1284,50 @@ class MainWindow(QMainWindow):
         menu.addAction(remove_action)
         menu.exec(self.my_shares_list_widget.mapToGlobal(pos))
 
-    def _handle_local_share_permission_change(self, share_name: str, perm: str, checked: bool):
+    def _handle_local_share_permission_change(
+        self, share_name: str, perm: str, checked: bool
+    ):
         """处理本机共享权限的更改。"""
         config = load_config(force_reload=True)
-        if not config: return
+        if not config:
+            return
         for share in config.get("shares", []):
             if share.get("name") == share_name:
-                if "permissions" not in share: share["permissions"] = ["read"]
+                if "permissions" not in share:
+                    share["permissions"] = ["read"]
                 if checked and perm not in share["permissions"]:
                     share["permissions"].append(perm)
                 elif not checked and perm in share["permissions"]:
                     share["permissions"].remove(perm)
                 break
         try:
-            with open(CONFIG_PATH, "w", encoding='utf-8') as f:
+            with open(CONFIG_PATH, "w", encoding="utf-8") as f:
                 toml.dump(config, f)
             self.controller.running_config = config
             self.update_my_shares_list()
-            if self.api_client: self.api_client.notify_shares_changed()
+            if self.api_client:
+                self.api_client.notify_shares_changed()
             self.add_log_message(f"共享 '{share_name}' 的权限已更新。", "🔧")
         except Exception as e:
             QMessageBox.critical(self, "错误", f"无法保存配置文件: {e}")
 
     def remove_local_share(self, share_name_to_remove: str):
         """从配置中移除一个本机共享。"""
-        reply = QMessageBox.question(self, "确认移除", f"确定要停止共享 '{share_name_to_remove}' 吗？",
-                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                                     QMessageBox.StandardButton.No)
-        if reply == QMessageBox.StandardButton.No: return
+        reply = QMessageBox.question(
+            self,
+            "确认移除",
+            f"确定要停止共享 '{share_name_to_remove}' 吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.No:
+            return
         config = get_config()
-        config['shares'] = [s for s in config.get("shares", []) if s.get("name") != share_name_to_remove]
+        config["shares"] = [
+            s for s in config.get("shares", []) if s.get("name") != share_name_to_remove
+        ]
         try:
-            with open(CONFIG_PATH, "w", encoding='utf-8') as f:
+            with open(CONFIG_PATH, "w", encoding="utf-8") as f:
                 toml.dump(config, f)
         except Exception as e:
             QMessageBox.critical(self, "错误", f"无法保存配置文件: {e}")
@@ -1209,14 +1335,14 @@ class MainWindow(QMainWindow):
         self.controller.running_config = load_config(force_reload=True)
         self.update_my_shares_list()
         self.controller.restart_file_watcher()
-        if self.api_client: self.api_client.notify_shares_changed()
+        if self.api_client:
+            self.api_client.notify_shares_changed()
         self.add_log_message(f"已停止共享: {share_name_to_remove}", "️")
-
 
     def _setup_websocket(self):
         """初始化连接到本机的WebSocket客户端。"""
         ws_uri = f"ws://127.0.0.1:{self.controller.port}/ws/events"
-        self.ws_local_thread = WebSocketClientThread(ws_uri, 'local')
+        self.ws_local_thread = WebSocketClientThread(ws_uri, "local")
         self.ws_local_thread.message_received.connect(self.handle_websocket_message)
         self.ws_local_thread.start()
 
@@ -1227,9 +1353,12 @@ class MainWindow(QMainWindow):
             self.controller.running_config = load_config(force_reload=True)
             self.update_my_shares_list()
             self.controller.restart_file_watcher()
-            if self.api_client: self.api_client.notify_shares_changed()
+            if self.api_client:
+                self.api_client.notify_shares_changed()
             self.add_log_message("配置已更新。", "⚙️")
-            QMessageBox.information(self, "设置已保存", "设置已成功保存。", QMessageBox.Ok)
+            QMessageBox.information(
+                self, "设置已保存", "设置已成功保存。", QMessageBox.Ok
+            )
 
     def show_about_dialog(self):
         """显示关于对话框，包含版本和功能说明。"""
@@ -1247,12 +1376,12 @@ class MainWindow(QMainWindow):
                 <li>跨平台支持 (Windows, macOS, Linux)</li>
             </ul>
             <p>感谢您的使用！</p>
-            """
+            """,
         )
 
     def add_log_message(self, message: str, icon: str = "ℹ️"):
         """向日志窗口添加一条带时间戳和图标的消息。"""
-        timestamp = time.strftime('%H:%M:%S')
+        timestamp = time.strftime("%H:%M:%S")
         self.log_text_edit.append(f"{icon} [{timestamp}] {message}")
 
     def handle_websocket_message(self, message: str, source: str):
@@ -1264,78 +1393,93 @@ class MainWindow(QMainWindow):
             # 直接根据事件类型调用相应的UI更新方法
             if event == "peer_online":
                 self.add_log_message(f"设备上线: {data.get('friendly_name')}", "🟢")
-                self.device_add_queue.append((data['name'], data['data']))
+                self.device_add_queue.append((data["name"], data["data"]))
                 self.ui_update_timer.start()
             elif event == "peer_offline":
                 self.add_log_message(f"设备下线: {data.get('friendly_name')}", "🔴")
-                self.device_remove_queue.append(data['name'])
+                self.device_remove_queue.append(data["name"])
                 self.ui_update_timer.start()
 
             # 其余事件处理保持不变
             elif event == "refresh_files" and self.active_peer_client:
                 if self.is_transfer_active:
                     return
-                    
+
                 # 检查是否有文件删除事件
                 deleted_files = data.get("deleted_files", [])
-                if deleted_files and source == 'local':
+                if deleted_files and source == "local":
                     # 处理本地文件被删除的情况
                     for file_info in deleted_files:
-                        file_type = "文件夹" if file_info.get('is_directory') else "文件"
-                        share_name = file_info.get('share_name', '')
-                        path = file_info.get('path', '')
+                        file_type = (
+                            "文件夹" if file_info.get("is_directory") else "文件"
+                        )
+                        share_name = file_info.get("share_name", "")
+                        path = file_info.get("path", "")
                         if path:
                             # 显示被删除的文件路径
-                            display_path = path if path != '.' else share_name
-                            self.add_log_message(f"警告: 对方已删除您共享的{file_type}: {display_path}", "🗑️")
-                
+                            display_path = path if path != "." else share_name
+                            self.add_log_message(
+                                f"警告: 对方已删除您共享的{file_type}: {display_path}",
+                                "🗑️",
+                            )
+
                 # 刷新文件列表
                 self.add_log_message("远程文件变更，延时刷新...", "🔄")
                 QTimer.singleShot(500, self.refresh_current_file_view)
-            elif event == "shares_updated" and source == 'remote':
-                self.add_log_message(f"设备 {data.get('device_name')} 共享已更新。", "🔄")
+            elif event == "shares_updated" and source == "remote":
+                self.add_log_message(
+                    f"设备 {data.get('device_name')} 共享已更新。", "🔄"
+                )
                 if self.device_list_widget.currentItem():
-                    self.handle_device_click(self.device_list_widget.currentItem(), force_refresh=True)
+                    self.handle_device_click(
+                        self.device_list_widget.currentItem(), force_refresh=True
+                    )
         except (json.JSONDecodeError, KeyError, AttributeError) as e:
             print(f"处理WebSocket消息时出错: {e}")
 
     def show_file_context_menu(self, pos):
         """显示文件列表的右键菜单。"""
         selected_items = self.file_table_widget.selectedItems()
-        if not selected_items: return
+        if not selected_items:
+            return
 
         menu = QMenu()
         download_action = QAction(self.download_icon, "下载选中项", self)
         download_action.triggered.connect(self.handle_download_action)
         menu.addAction(download_action)
-        
+
         # 获取当前共享的权限
         current_share = self.share_selector_combo.currentText()
         if not current_share:
             menu.exec(self.file_table_widget.mapToGlobal(pos))
             return
-            
+
         # 获取当前共享的权限设置
-        all_shares = load_config(force_reload=True).get('shares', [])
-        target_share = next((s for s in all_shares if s.get("name") == current_share), None)
+        all_shares = load_config(force_reload=True).get("shares", [])
+        target_share = next(
+            (s for s in all_shares if s.get("name") == current_share), None
+        )
         if not target_share:
             menu.exec(self.file_table_widget.mapToGlobal(pos))
             return
-            
+
         permissions = target_share.get("permissions", [])
-        
+
         # 只有一个选中项时才显示重命名选项
-        if len(selected_items) == len(set(item.row() for item in selected_items)) and "rename" in permissions:
+        if (
+            len(selected_items) == len(set(item.row() for item in selected_items))
+            and "rename" in permissions
+        ):
             rename_action = QAction("重命名", self)
             rename_action.triggered.connect(self.handle_rename_action)
             menu.addAction(rename_action)
-            
+
         # 添加删除选项
         if "delete" in permissions:
             delete_action = QAction("删除选中项", self)
             delete_action.triggered.connect(self.handle_delete_action)
             menu.addAction(delete_action)
-            
+
         menu.exec(self.file_table_widget.mapToGlobal(pos))
 
     def _get_items_to_process(self) -> List[Dict[str, Any]]:
@@ -1349,23 +1493,29 @@ class MainWindow(QMainWindow):
                 name_item = self.file_table_widget.item(row, 1)
                 type_item = self.file_table_widget.item(row, 2)
                 if name_item and type_item:
-                    items.append({
-                        'name': name_item.text(),
-                        'is_dir': type_item.text() == '文件夹'
-                    })
+                    items.append(
+                        {
+                            "name": name_item.text(),
+                            "is_dir": type_item.text() == "文件夹",
+                        }
+                    )
                     processed_rows.add(row)
 
         if not items:
-            selected_rows = sorted(list(set(item.row() for item in self.file_table_widget.selectedItems())))
+            selected_rows = sorted(
+                list(set(item.row() for item in self.file_table_widget.selectedItems()))
+            )
             for row in selected_rows:
                 if row not in processed_rows:
                     name_item = self.file_table_widget.item(row, 1)
                     type_item = self.file_table_widget.item(row, 2)
                     if name_item and type_item:
-                        items.append({
-                            'name': name_item.text(),
-                            'is_dir': type_item.text() == '文件夹'
-                        })
+                        items.append(
+                            {
+                                "name": name_item.text(),
+                                "is_dir": type_item.text() == "文件夹",
+                            }
+                        )
         return items
 
     def handle_download_action(self):
@@ -1376,39 +1526,46 @@ class MainWindow(QMainWindow):
         """
         items_to_download = self._get_items_to_process()
         if not items_to_download:
-            QMessageBox.information(self, "提示", "请先勾选或选中要下载的文件/文件夹。", QMessageBox.Ok)
+            QMessageBox.information(
+                self, "提示", "请先勾选或选中要下载的文件/文件夹。", QMessageBox.Ok
+            )
             return
 
         save_dir = QFileDialog.getExistingDirectory(self, "选择保存下载内容的位置")
-        if not save_dir: return
+        if not save_dir:
+            return
 
         tasks = []
         for item in items_to_download:
-            remote_path = "/".join(self.active_path_stack + [item['name']])
+            remote_path = "/".join(self.active_path_stack + [item["name"]])
 
-            if item['is_dir']:
+            if item["is_dir"]:
                 # --- 【核心修正】: 无论新旧逻辑，文件夹都保存为 .tar ---
                 save_path = os.path.join(save_dir, f"{item['name']}.tar")
-                tasks.append({
-                    # 优先使用新的TCP高速模式
-                    "type": "download_folder_tcp",
-                    "name": item['name'],
-                    "peer_client": self.active_peer_client,
-                    "share_name": self.share_selector_combo.currentText(),
-                    "remote_path": remote_path,
-                    "save_path": save_path,
-                })
+                tasks.append(
+                    {
+                        # 优先使用新的TCP高速模式
+                        "type": "download_folder_tcp",
+                        "name": item["name"],
+                        "peer_client": self.active_peer_client,
+                        "share_name": self.share_selector_combo.currentText(),
+                        "remote_path": remote_path,
+                        "save_path": save_path,
+                    }
+                )
             else:
                 # 文件下载逻辑保持不变
-                save_path = os.path.join(save_dir, item['name'])
-                tasks.append({
-                    "type": "download_file",
-                    "name": item['name'],
-                    "peer_client": self.active_peer_client,
-                    "share_name": self.share_selector_combo.currentText(),
-                    "remote_path": remote_path,
-                    "save_path": save_path,
-                })
+                save_path = os.path.join(save_dir, item["name"])
+                tasks.append(
+                    {
+                        "type": "download_file",
+                        "name": item["name"],
+                        "peer_client": self.active_peer_client,
+                        "share_name": self.share_selector_combo.currentText(),
+                        "remote_path": remote_path,
+                        "save_path": save_path,
+                    }
+                )
 
         if tasks:
             self.start_worker_thread("下载任务", tasks)
@@ -1417,30 +1574,38 @@ class MainWindow(QMainWindow):
         """处理上传文件或文件夹的操作。"""
         if not self.active_peer_client or not self.share_selector_combo.currentText():
             return
-        
+
         # 获取当前共享的权限
         current_share = self.share_selector_combo.currentText()
-        all_shares = load_config(force_reload=True).get('shares', [])
-        target_share = next((s for s in all_shares if s.get("name") == current_share), None)
+        all_shares = load_config(force_reload=True).get("shares", [])
+        target_share = next(
+            (s for s in all_shares if s.get("name") == current_share), None
+        )
         if not target_share or "upload" not in target_share.get("permissions", []):
-            QMessageBox.warning(self, "权限不足", "对方未授予上传权限。", QMessageBox.Ok)
+            QMessageBox.warning(
+                self, "权限不足", "对方未授予上传权限。", QMessageBox.Ok
+            )
             return
-            
+
         if is_folder:
             # 【优化】使用QFileDialog.getExistingDirectory前先更新状态栏
             self.status_bar_label.setText("请选择要上传的文件夹...")
             QApplication.processEvents()
-            
-            folder_path = QFileDialog.getExistingDirectory(self, "选择要上传的文件夹", "")
+
+            folder_path = QFileDialog.getExistingDirectory(
+                self, "选择要上传的文件夹", ""
+            )
             if not folder_path:
                 self.status_bar_label.setText("已取消上传")
                 return
-                
+
             # 【优化】在启动上传前显示更明确的提示，避免UI卡顿时用户无反馈
             self.status_bar_label.setText("正在准备上传文件夹，请稍候...")
-            self.add_log_message(f"正在准备上传文件夹: {os.path.basename(folder_path)}", "⏳")
+            self.add_log_message(
+                f"正在准备上传文件夹: {os.path.basename(folder_path)}", "⏳"
+            )
             QApplication.processEvents()  # 立即更新UI
-            
+
             # 【优化】使用单独线程计算文件夹大小，避免卡顿
             def calculate_folder_size():
                 try:
@@ -1452,58 +1617,67 @@ class MainWindow(QMainWindow):
                             if os.path.isfile(file_path):
                                 total_size += os.path.getsize(file_path)
                                 file_count += 1
-                    
+
                     # 在主线程中更新UI
-                    QTimer.singleShot(0, lambda: self.status_bar_label.setText(
-                        f"准备上传: {os.path.basename(folder_path)} ({file_count}个文件, {self._format_size(total_size)})"
-                    ))
-                    QTimer.singleShot(0, lambda: self.add_log_message(
-                        f"文件夹大小: {self._format_size(total_size)}, 包含{file_count}个文件", "📊"
-                    ))
+                    QTimer.singleShot(
+                        0,
+                        lambda: self.status_bar_label.setText(
+                            f"准备上传: {os.path.basename(folder_path)} ({file_count}个文件, {self._format_size(total_size)})"
+                        ),
+                    )
+                    QTimer.singleShot(
+                        0,
+                        lambda: self.add_log_message(
+                            f"文件夹大小: {self._format_size(total_size)}, 包含{file_count}个文件",
+                            "📊",
+                        ),
+                    )
                 except Exception as e:
                     print(f"计算文件夹大小时出错: {e}")
-            
+
             # 启动计算线程
             threading.Thread(target=calculate_folder_size, daemon=True).start()
-            
+
             # 延迟一小段时间后再启动上传，让用户看到准备信息
-            QTimer.singleShot(500, lambda: self._start_folder_upload(folder_path, current_share))
+            QTimer.singleShot(
+                500, lambda: self._start_folder_upload(folder_path, current_share)
+            )
         else:
             file_paths, _ = QFileDialog.getOpenFileNames(self, "选择要上传的文件", "")
             if not file_paths:
                 return
-                
+
             tasks = []
             dest_path = "/" + "/".join(self.active_path_stack)
             for file_path in file_paths:
                 task = {
-                    "type": "upload_file", 
+                    "type": "upload_file",
                     "name": os.path.basename(file_path),
-                    "local_path": file_path, 
+                    "local_path": file_path,
                     "peer_client": self.active_peer_client,
-                    "share_name": current_share, 
+                    "share_name": current_share,
                     "dest_path": dest_path,
-                    "conflict_action": "ask"
+                    "conflict_action": "ask",
                 }
                 tasks.append(task)
-                
+
             # 启动工作线程
             self.start_worker_thread("上传文件", tasks)
-            
+
     def _start_folder_upload(self, folder_path, share_name):
         """启动文件夹上传任务，从handle_upload_action分离出来以支持延迟启动"""
         folder_name = os.path.basename(folder_path)
         dest_path = "/" + "/".join(self.active_path_stack)
         task = {
-            "type": "upload_folder", 
+            "type": "upload_folder",
             "name": folder_name,
-            "local_path": folder_path, 
+            "local_path": folder_path,
             "peer_client": self.active_peer_client,
-            "share_name": share_name, 
+            "share_name": share_name,
             "dest_path": dest_path,
-            "conflict_action": "ask"
+            "conflict_action": "ask",
         }
-        
+
         # 启动工作线程
         self.start_worker_thread("上传文件夹", [task])
 
@@ -1511,29 +1685,35 @@ class MainWindow(QMainWindow):
         """处理删除文件或文件夹的操作"""
         items_to_delete = self._get_items_to_process()
         if not items_to_delete:
-            QMessageBox.information(self, "提示", "请先勾选或选中要删除的文件/文件夹。", QMessageBox.Ok)
+            QMessageBox.information(
+                self, "提示", "请先勾选或选中要删除的文件/文件夹。", QMessageBox.Ok
+            )
             return
-            
+
         # 确认删除
         msg = f"确定要删除选中的 {len(items_to_delete)} 个项目吗？此操作不可恢复。"
-        reply = QMessageBox.question(self, "确认删除", msg, 
-                                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                                    QMessageBox.StandardButton.No)
+        reply = QMessageBox.question(
+            self,
+            "确认删除",
+            msg,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
         if reply == QMessageBox.StandardButton.No:
             return
-            
+
         # 执行删除
         share_name = self.share_selector_combo.currentText()
         success_count = 0
         error_count = 0
-        
+
         # 更新状态栏
         self.status_bar_label.setText(f"正在删除 {len(items_to_delete)} 个项目...")
         QApplication.processEvents()  # 立即更新UI
-        
+
         for item in items_to_delete:
             try:
-                remote_path = "/".join(self.active_path_stack + [item['name']])
+                remote_path = "/".join(self.active_path_stack + [item["name"]])
                 result = self.active_peer_client.delete_file(share_name, remote_path)
                 if result:
                     self.add_log_message(f"已删除: {item['name']}", "🗑️")
@@ -1544,56 +1724,74 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 self.add_log_message(f"删除 {item['name']} 时出错: {e}", "❌")
                 error_count += 1
-                
+
         # 刷新文件列表
         self.refresh_current_file_view()
-        
+
         # 显示操作结果
         if error_count == 0:
             self.status_bar_label.setText(f"成功删除 {success_count} 个项目")
         else:
-            self.status_bar_label.setText(f"删除完成: {success_count} 成功, {error_count} 失败")
-            QMessageBox.warning(self, "删除结果", f"成功删除 {success_count} 个项目，{error_count} 个项目删除失败。", QMessageBox.Ok)
+            self.status_bar_label.setText(
+                f"删除完成: {success_count} 成功, {error_count} 失败"
+            )
+            QMessageBox.warning(
+                self,
+                "删除结果",
+                f"成功删除 {success_count} 个项目，{error_count} 个项目删除失败。",
+                QMessageBox.Ok,
+            )
 
     def handle_rename_action(self):
         """处理重命名文件或文件夹的操作"""
-        selected_rows = sorted(list(set(item.row() for item in self.file_table_widget.selectedItems())))
+        selected_rows = sorted(
+            list(set(item.row() for item in self.file_table_widget.selectedItems()))
+        )
         if len(selected_rows) != 1:
-            QMessageBox.information(self, "提示", "请选择一个要重命名的文件或文件夹。", QMessageBox.Ok)
+            QMessageBox.information(
+                self, "提示", "请选择一个要重命名的文件或文件夹。", QMessageBox.Ok
+            )
             return
-            
+
         row = selected_rows[0]
         name_item = self.file_table_widget.item(row, 1)
         if not name_item:
             return
-            
+
         old_name = name_item.text()
-        
+
         # 获取新名称
         from PySide6.QtWidgets import QInputDialog
-        new_name, ok = QInputDialog.getText(self, "重命名", "请输入新名称:", text=old_name)
-        
+
+        new_name, ok = QInputDialog.getText(
+            self, "重命名", "请输入新名称:", text=old_name
+        )
+
         if not ok or not new_name or new_name == old_name:
             return
-            
+
         # 执行重命名
         try:
             share_name = self.share_selector_combo.currentText()
             remote_path = "/".join(self.active_path_stack + [old_name])
-            
+
             # 更新状态栏提示
             self.status_bar_label.setText(f"正在重命名: {old_name} -> {new_name}")
             QApplication.processEvents()  # 立即更新UI
-            
+
             # 调用API执行重命名
-            result = self.active_peer_client.rename_file(share_name, remote_path, new_name)
-            
+            result = self.active_peer_client.rename_file(
+                share_name, remote_path, new_name
+            )
+
             if result:
                 self.add_log_message(f"已重命名: {old_name} -> {new_name}", "✏️")
                 # 刷新文件列表
                 self.refresh_current_file_view()
             else:
-                QMessageBox.critical(self, "错误", f"重命名失败: {old_name}", QMessageBox.Ok)
+                QMessageBox.critical(
+                    self, "错误", f"重命名失败: {old_name}", QMessageBox.Ok
+                )
         except Exception as e:
             self.add_log_message(f"重命名时出错: {e}", "❌")
             QMessageBox.critical(self, "错误", f"重命名失败: {str(e)}", QMessageBox.Ok)
@@ -1606,28 +1804,30 @@ class MainWindow(QMainWindow):
         """当工作线程完成所有任务时调用的槽函数。"""
         # 标记传输已完成
         self.is_transfer_active = False
-        
+
         # 关闭进度对话框
-        if self.progress_dialog: 
+        if self.progress_dialog:
             self.progress_dialog.close()
-        
+
         # 【优化】先更新状态栏，避免卡顿
         self.status_bar_label.setText("传输任务完成")
         self.add_log_message("所有传输任务已完成。", "🎉")
         QApplication.processEvents()  # 立即更新UI
-        
+
         # 【优化】使用延迟刷新文件列表，避免卡顿
         def delayed_refresh():
             # 刷新文件列表
             self.refresh_current_file_view()
-            
+
             # 显示完成提示
             if self.worker_thread and not self.worker_thread.has_errors:
-                QMessageBox.information(self, "任务完成", "所有传输任务已成功完成。", QMessageBox.Ok)
-            
+                QMessageBox.information(
+                    self, "任务完成", "所有传输任务已成功完成。", QMessageBox.Ok
+                )
+
             # 清理工作线程引用
             self.worker_thread = None
-        
+
         # 使用QTimer延迟执行刷新和显示完成对话框，让UI有时间更新
         QTimer.singleShot(500, delayed_refresh)
 
@@ -1661,7 +1861,8 @@ class MainWindow(QMainWindow):
 
     def on_item_double_clicked(self, item: QTableWidgetItem):
         """处理文件列表中的双击事件（进入文件夹）。"""
-        if item.column() == 0: return
+        if item.column() == 0:
+            return
         row = self.file_table_widget.row(item)
         if self.file_table_widget.item(row, 2).text() == "文件夹":
             folder_name = self.file_table_widget.item(row, 1).text()
@@ -1676,28 +1877,29 @@ class MainWindow(QMainWindow):
 
     def refresh_current_file_view(self):
         """刷新当前的文件列表视图。"""
-        if not self.active_peer_client or not self.share_selector_combo.currentText(): return
-        
+        if not self.active_peer_client or not self.share_selector_combo.currentText():
+            return
+
         current_share = self.share_selector_combo.currentText()
         current_path = "/" + "/".join(self.active_path_stack)
         self.current_path_label.setText(current_path)
         self.back_button.setEnabled(bool(self.active_path_stack))
-        
+
         # 获取当前共享的权限状态（刷新前）
         previous_permissions = None
         try:
             shares = self.active_peer_client.get_shares()
             if shares:
                 for share in shares:
-                    if share.get('name') == current_share:
-                        previous_permissions = set(share.get('permissions', []))
+                    if share.get("name") == current_share:
+                        previous_permissions = set(share.get("permissions", []))
                         break
         except Exception:
             pass
-        
+
         # 获取文件列表
         files = self.active_peer_client.get_files(current_share, current_path)
-        
+
         # 如果获取文件列表失败，检查是否是权限问题
         if files is None and previous_permissions is not None:
             # 重新获取共享信息，检查权限是否变更
@@ -1705,27 +1907,33 @@ class MainWindow(QMainWindow):
                 shares = self.active_peer_client.get_shares()
                 if shares:
                     for share in shares:
-                        if share.get('name') == current_share:
-                            current_permissions = set(share.get('permissions', []))
-                            removed_permissions = previous_permissions - current_permissions
+                        if share.get("name") == current_share:
+                            current_permissions = set(share.get("permissions", []))
+                            removed_permissions = (
+                                previous_permissions - current_permissions
+                            )
                             if removed_permissions:
                                 # 权限被移除，显示日志
                                 perm_names = {
-                                    'read': '读取',
-                                    'download': '下载',
-                                    'upload': '上传',
-                                    'delete': '删除',
-                                    'rename': '重命名'
+                                    "read": "读取",
+                                    "download": "下载",
+                                    "upload": "上传",
+                                    "delete": "删除",
+                                    "rename": "重命名",
                                 }
-                                removed_perm_names = [perm_names.get(p, p) for p in removed_permissions]
-                                self.add_log_message(f"警告: 对方已移除当前文件夹的 {', '.join(removed_perm_names)} 权限", "⚠️")
+                                removed_perm_names = [
+                                    perm_names.get(p, p) for p in removed_permissions
+                                ]
+                                self.add_log_message(
+                                    f"警告: 对方已移除当前文件夹的 {', '.join(removed_perm_names)} 权限",
+                                    "⚠️",
+                                )
                             break
             except Exception:
                 pass
-        
+
         # 更新文件表格
         self.update_file_table(files)
-
 
     def clear_active_peer_view(self):
         """当远程设备断开时，清空右侧视图。"""
@@ -1741,7 +1949,9 @@ class MainWindow(QMainWindow):
         self.download_button.setEnabled(False)
         self.right_stack.setCurrentWidget(self.welcome_page)
 
-    def handle_device_click(self, clicked_item: QListWidgetItem, force_refresh: bool = False):
+    def handle_device_click(
+        self, clicked_item: QListWidgetItem, force_refresh: bool = False
+    ):
         """【最终修复版】使用健壮的线程生命周期管理。"""
         if not clicked_item:
             return
@@ -1756,9 +1966,13 @@ class MainWindow(QMainWindow):
             return
 
         new_base_url = f"http://{device_data['address']}:{device_data['port']}"
-        display_name = service_name.split('._netneighbor._tcp.local.')[0]
+        display_name = service_name.split("._netneighbor._tcp.local.")[0]
 
-        if not force_refresh and self.active_peer_client and self.active_peer_client.base_url == new_base_url:
+        if (
+            not force_refresh
+            and self.active_peer_client
+            and self.active_peer_client.base_url == new_base_url
+        ):
             self.right_stack.setCurrentWidget(self.file_browser_page)
             return
 
@@ -1769,7 +1983,9 @@ class MainWindow(QMainWindow):
 
         self.connection_thread = ConnectionThread(new_base_url)
         self.connection_thread.connection_successful.connect(
-            lambda client, shares: self._on_connection_successful(client, shares, display_name)
+            lambda client, shares: self._on_connection_successful(
+                client, shares, display_name
+            )
         )
         self.connection_thread.connection_failed.connect(
             lambda error_msg: self._on_connection_failed(error_msg, display_name)
@@ -1789,7 +2005,9 @@ class MainWindow(QMainWindow):
         """
         try:
             # 这条打印信息会出现在您的控制台（命令行窗口）
-            print(f"[{time.strftime('%H:%M:%S')}] 后台线程启动，即将休眠5秒以模拟网络延迟...")
+            print(
+                f"[{time.strftime('%H:%M:%S')}] 后台线程启动，即将休眠5秒以模拟网络延迟..."
+            )
 
             # --- 诊断代码: 我们用一个无害的休眠来替换掉真正的网络请求 ---
             time.sleep(5)
@@ -1799,12 +2017,18 @@ class MainWindow(QMainWindow):
 
         except Exception as e:
             # 这条打印信息也会出现在控制台
-            print(f"[{time.strftime('%H:%M:%S')}] 后台线程休眠结束，准备在主线程中报告错误...")
+            print(
+                f"[{time.strftime('%H:%M:%S')}] 后台线程休眠结束，准备在主线程中报告错误..."
+            )
 
             # 使用QTimer在主线程安全地更新UI
-            QTimer.singleShot(0, lambda: self._on_connection_failed(str(e), display_name))
+            QTimer.singleShot(
+                0, lambda: self._on_connection_failed(str(e), display_name)
+            )
 
-    def _on_connection_successful(self, client: ApiClient, shares: list, display_name: str):
+    def _on_connection_successful(
+        self, client: ApiClient, shares: list, display_name: str
+    ):
         """【最终修复版】连接成功后的UI更新槽函数。"""
         QApplication.restoreOverrideCursor()
         self.add_log_message(f"已连接到设备: {display_name}", "🔌")
@@ -1817,13 +2041,13 @@ class MainWindow(QMainWindow):
             self.ws_remote_thread.stop()
 
         ws_uri = f"ws://{client.base_url.split('//')[1]}/ws/events"
-        self.ws_remote_thread = WebSocketClientThread(ws_uri, 'remote')
+        self.ws_remote_thread = WebSocketClientThread(ws_uri, "remote")
         self.ws_remote_thread.message_received.connect(self.handle_websocket_message)
         self.ws_remote_thread.start()
 
         self.share_selector_combo.blockSignals(True)
         self.share_selector_combo.clear()
-        share_names = [s['name'] for s in shares] if shares else []
+        share_names = [s["name"] for s in shares] if shares else []
         if share_names:
             self.share_selector_combo.addItems(share_names)
         self.share_selector_combo.blockSignals(False)
@@ -1860,14 +2084,23 @@ class MainWindow(QMainWindow):
                 if client.get_ping():
                     delay = int((time.perf_counter() - start) * 1000)
                     # 使用QTimer在主线程中安全地更新UI
-                    QTimer.singleShot(0, lambda: self.status_bar_label.setText(f"已连接到 {name} | 延迟: {delay}ms"))
+                    QTimer.singleShot(
+                        0,
+                        lambda: self.status_bar_label.setText(
+                            f"已连接到 {name} | 延迟: {delay}ms"
+                        ),
+                    )
                 else:
                     # 如果ping失败，只显示已连接状态
-                    QTimer.singleShot(0, lambda: self.status_bar_label.setText(f"已连接到 {name}"))
+                    QTimer.singleShot(
+                        0, lambda: self.status_bar_label.setText(f"已连接到 {name}")
+                    )
             except Exception as e:
                 print(f"测量延迟时出错: {e}")
                 # 出错时也只显示已连接状态
-                QTimer.singleShot(0, lambda: self.status_bar_label.setText(f"已连接到 {name}"))
+                QTimer.singleShot(
+                    0, lambda: self.status_bar_label.setText(f"已连接到 {name}")
+                )
 
         threading.Thread(target=do_ping, daemon=True).start()
 
@@ -1876,34 +2109,43 @@ class MainWindow(QMainWindow):
         self.file_table_widget.setRowCount(0)
         has_shares = self.share_selector_combo.count() > 0
         self.upload_button.setEnabled(has_shares)
-        
+
         # 初始状态下禁用下载按钮，因为没有选中任何文件
         self.download_button.setEnabled(False)
-        
+
         # 检查当前共享是否有下载权限
         current_share = self.share_selector_combo.currentText()
         if current_share:
-            all_shares = load_config(force_reload=True).get('shares', [])
-            target_share = next((s for s in all_shares if s.get("name") == current_share), None)
+            all_shares = load_config(force_reload=True).get("shares", [])
+            target_share = next(
+                (s for s in all_shares if s.get("name") == current_share), None
+            )
             if target_share and "download" not in target_share.get("permissions", []):
                 # 如果没有下载权限，始终禁用下载按钮
                 self.download_button.setEnabled(False)
 
-        if files is None: return
+        if files is None:
+            return
 
-        files.sort(key=lambda x: (not x['is_dir'], x['name'].lower()))
+        files.sort(key=lambda x: (not x["is_dir"], x["name"].lower()))
         self.file_table_widget.setRowCount(len(files))
         for row, file_info in enumerate(files):
             check_item = QTableWidgetItem()
-            check_item.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
+            check_item.setFlags(
+                Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled
+            )
             check_item.setCheckState(Qt.CheckState.Unchecked)
 
-            name_item = QTableWidgetItem(file_info['name'])
-            name_item.setIcon(self.folder_icon if file_info['is_dir'] else self.file_icon)
+            name_item = QTableWidgetItem(file_info["name"])
+            name_item.setIcon(
+                self.folder_icon if file_info["is_dir"] else self.file_icon
+            )
 
-            type_item = QTableWidgetItem("文件夹" if file_info['is_dir'] else "文件")
-            size_item = QTableWidgetItem(self._format_size(file_info['size']))
-            size_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            type_item = QTableWidgetItem("文件夹" if file_info["is_dir"] else "文件")
+            size_item = QTableWidgetItem(self._format_size(file_info["size"]))
+            size_item.setTextAlignment(
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+            )
 
             for item in [name_item, type_item, size_item]:
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
@@ -1912,59 +2154,73 @@ class MainWindow(QMainWindow):
             self.file_table_widget.setItem(row, 1, name_item)
             self.file_table_widget.setItem(row, 2, type_item)
             self.file_table_widget.setItem(row, 3, size_item)
-            
+
         # 添加文件选择变化的监听，以更新下载按钮状态
-        self.file_table_widget.itemSelectionChanged.connect(self._update_download_button_state)
+        self.file_table_widget.itemSelectionChanged.connect(
+            self._update_download_button_state
+        )
         self.file_table_widget.itemChanged.connect(self._update_download_button_state)
-        
+
     def _update_download_button_state(self):
         """更新下载按钮的启用状态，根据是否有选中的文件和当前共享的权限"""
         # 检查当前共享是否有下载权限
         current_share = self.share_selector_combo.currentText()
         has_download_permission = False
-        
+
         if current_share:
-            all_shares = load_config(force_reload=True).get('shares', [])
-            target_share = next((s for s in all_shares if s.get("name") == current_share), None)
+            all_shares = load_config(force_reload=True).get("shares", [])
+            target_share = next(
+                (s for s in all_shares if s.get("name") == current_share), None
+            )
             if target_share:
-                has_download_permission = "download" in target_share.get("permissions", [])
-        
+                has_download_permission = "download" in target_share.get(
+                    "permissions", []
+                )
+
         if not has_download_permission:
             self.download_button.setEnabled(False)
             return
-            
+
         # 检查是否有选中的文件或勾选的文件
         has_selected_items = len(self.file_table_widget.selectedItems()) > 0
-        
+
         has_checked_items = False
         for row in range(self.file_table_widget.rowCount()):
             check_item = self.file_table_widget.item(row, 0)
             if check_item and check_item.checkState() == Qt.CheckState.Checked:
                 has_checked_items = True
                 break
-                
+
         # 如果有选中或勾选的文件，并且有下载权限，则启用下载按钮
-        self.download_button.setEnabled(has_download_permission and (has_selected_items or has_checked_items))
+        self.download_button.setEnabled(
+            has_download_permission and (has_selected_items or has_checked_items)
+        )
 
     def closeEvent(self, event):
         """处理窗口关闭事件，确保所有后台线程都安全退出。"""
         if self.worker_thread and self.worker_thread.isRunning():
-            reply = QMessageBox.question(self, "退出确认", "有文件正在传输，确定要强制退出吗？",
-                                         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                                         QMessageBox.StandardButton.No)
+            reply = QMessageBox.question(
+                self,
+                "退出确认",
+                "有文件正在传输，确定要强制退出吗？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
             if reply == QMessageBox.StandardButton.No:
                 event.ignore()
                 return
             else:
                 self.worker_thread.stop()
-        
+
         # 停止设备同步定时器
-        if hasattr(self, 'device_sync_timer') and self.device_sync_timer.isActive():
+        if hasattr(self, "device_sync_timer") and self.device_sync_timer.isActive():
             self.device_sync_timer.stop()
-            
+
         self.add_log_message("应用正在关闭...", "👋")
-        if self.ws_local_thread: self.ws_local_thread.stop()
-        if self.ws_remote_thread: self.ws_remote_thread.stop()
+        if self.ws_local_thread:
+            self.ws_local_thread.stop()
+        if self.ws_remote_thread:
+            self.ws_remote_thread.stop()
         self.controller.stop_all_services()
         self.add_log_message("所有服务和线程已停止。应用退出。", "👋")
         event.accept()
@@ -1976,7 +2232,7 @@ class MainWindow(QMainWindow):
 
         self.online_devices_data[service_name] = device_data
 
-        display_name = service_name.split('._netneighbor._tcp.local.')[0]
+        display_name = service_name.split("._netneighbor._tcp.local.")[0]
         dev_type = device_data.get("properties", {}).get("dev_type", "未知")
 
         item = QListWidgetItem(f"{display_name}\n类型: {dev_type}")
@@ -1991,7 +2247,7 @@ class MainWindow(QMainWindow):
         for i in range(self.device_list_widget.count()):
             existing_item = self.device_list_widget.item(i)
             # 列表项的文本是多行的，我们只取第一行（设备名）进行比较
-            existing_display_name = existing_item.text().split('\n')[0]
+            existing_display_name = existing_item.text().split("\n")[0]
             existing_item_key = natural_sort_key(existing_display_name)
 
             if new_item_key < existing_item_key:
@@ -2011,7 +2267,7 @@ class MainWindow(QMainWindow):
         if self.active_peer_client:
             device_data = self.online_devices_data.get(service_name)
             if device_data:
-                active_url_part = self.active_peer_client.base_url.split('//')[1]
+                active_url_part = self.active_peer_client.base_url.split("//")[1]
                 device_url_part = f"{device_data['address']}:{device_data['port']}"
                 if active_url_part == device_url_part:
                     self.clear_active_peer_view()
@@ -2029,32 +2285,37 @@ class MainWindow(QMainWindow):
     def _update_status_bar_device_count(self):
         """更新状态栏中的设备计数。"""
         count = len(self.online_devices_data)
-        self.status_bar_label.setText(f"发现在线设备: {count} 个" if count > 0 else "就绪. 正在扫描局域网设备...")
+        self.status_bar_label.setText(
+            f"发现在线设备: {count} 个" if count > 0 else "就绪. 正在扫描局域网设备..."
+        )
 
     def _sync_device_list_with_backend(self):
         """定期与后端同步设备列表状态，确保UI显示的设备都是真实在线的"""
         if not self.api_client:
             return
-            
+
         # 获取后端当前的设备列表
         current_peers = self.api_client.get_peers()
         if current_peers is None:
             return
-            
+
         my_service_name = f"{self.controller.service_name}._netneighbor._tcp.local."
-        
+
         # 找出已经不在后端列表中但仍在UI中显示的设备
         devices_to_remove = []
         for service_name in list(self.online_devices_data.keys()):
             if service_name != my_service_name and service_name not in current_peers:
                 devices_to_remove.append(service_name)
-        
+
         # 找出在后端列表中但不在UI中显示的设备
         devices_to_add = []
         for service_name, data in current_peers.items():
-            if service_name != my_service_name and service_name not in self.online_devices_data:
+            if (
+                service_name != my_service_name
+                and service_name not in self.online_devices_data
+            ):
                 devices_to_add.append((service_name, data))
-        
+
         # 如果有需要更新的设备，将它们添加到队列并触发更新
         if devices_to_remove or devices_to_add:
             self.device_remove_queue.extend(devices_to_remove)
@@ -2105,8 +2366,12 @@ class MainWindow(QMainWindow):
                 if self.active_peer_client:
                     device_data = self.online_devices_data.get(service_name)
                     if device_data:
-                        active_url_part = self.active_peer_client.base_url.split('//')[1]
-                        device_url_part = f"{device_data['address']}:{device_data['port']}"
+                        active_url_part = self.active_peer_client.base_url.split("//")[
+                            1
+                        ]
+                        device_url_part = (
+                            f"{device_data['address']}:{device_data['port']}"
+                        )
                         if active_url_part == device_url_part:
                             self.clear_active_peer_view()
                 # 从核心数据字典中删除
@@ -2122,7 +2387,7 @@ class MainWindow(QMainWindow):
                     for service_name in list(self.online_devices_data.keys()):
                         if service_name not in current_peers:
                             extra_devices_to_remove.append(service_name)
-                    
+
                     # 处理额外需要移除的设备
                     for service_name in extra_devices_to_remove:
                         if service_name in self.online_devices_data:
@@ -2130,7 +2395,9 @@ class MainWindow(QMainWindow):
                             if self.active_peer_client:
                                 device_data = self.online_devices_data.get(service_name)
                                 if device_data:
-                                    active_url_part = self.active_peer_client.base_url.split('//')[1]
+                                    active_url_part = (
+                                        self.active_peer_client.base_url.split("//")[1]
+                                    )
                                     device_url_part = f"{device_data['address']}:{device_data['port']}"
                                     if active_url_part == device_url_part:
                                         self.clear_active_peer_view()
@@ -2147,17 +2414,19 @@ class MainWindow(QMainWindow):
         # 将字典转换为可排序的列表
         sorted_devices = sorted(
             self.online_devices_data.items(),
-            key=lambda item: natural_sort_key(item[0].split('._netneighbor._tcp.local.')[0])
+            key=lambda item: natural_sort_key(
+                item[0].split("._netneighbor._tcp.local.")[0]
+            ),
         )
 
         for service_name, device_data in sorted_devices:
-            display_name = service_name.split('._netneighbor._tcp.local.')[0]
+            display_name = service_name.split("._netneighbor._tcp.local.")[0]
             dev_type = device_data.get("properties", {}).get("dev_type", "未知")
 
             item = QListWidgetItem(f"{display_name}\n类型: {dev_type}")
             item.setIcon(self.device_icon)
             item.setData(Qt.ItemDataRole.UserRole, service_name)
-            self.device_list_widget.addItem(item) # 高效地批量添加
+            self.device_list_widget.addItem(item)  # 高效地批量添加
 
         # 关键：在所有操作完成后，一次性地重新启用UI重绘并应用所有更改
         self.device_list_widget.setUpdatesEnabled(True)
@@ -2173,7 +2442,9 @@ class MainWindow(QMainWindow):
 
         if not shares:
             # --- 【核心改进】: 为新用户提供清晰的引导 ---
-            item = QListWidgetItem("👉 请点击右侧\"设置\"按钮\n    添加您的第一个共享文件夹")
+            item = QListWidgetItem(
+                '👉 请点击右侧"设置"按钮\n    添加您的第一个共享文件夹'
+            )
             item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
             font = item.font()
             font.setItalic(True)
@@ -2183,12 +2454,15 @@ class MainWindow(QMainWindow):
             return
 
         for share in shares:
-            name = share.get('name', '未命名')
+            name = share.get("name", "未命名")
             permissions = share.get("permissions", [])
             parts = []
-            if "read" in permissions: parts.append("可读")
-            if "download" in permissions: parts.append("可下载")
-            if "upload" in permissions: parts.append("可上传")
+            if "read" in permissions:
+                parts.append("可读")
+            if "download" in permissions:
+                parts.append("可下载")
+            if "upload" in permissions:
+                parts.append("可上传")
             perm_text = "/".join(parts) if parts else "无权限"
             item = QListWidgetItem(f"{name} ({perm_text})")
             item.setToolTip(f"本地路径: {share.get('path')}")
@@ -2199,39 +2473,39 @@ class MainWindow(QMainWindow):
         """处理拖拽的文件和文件夹"""
         if not self.active_peer_client:
             return
-            
+
         dest_path = "/".join(self.active_path_stack)
         tasks = []
-        
+
         for url in urls:
             local_path = url.toLocalFile()
             if not local_path:
                 continue
-                
+
             if os.path.isdir(local_path):
                 # 处理文件夹
                 task = {
-                    "type": "upload_folder", 
+                    "type": "upload_folder",
                     "name": os.path.basename(local_path),
-                    "local_path": local_path, 
+                    "local_path": local_path,
                     "peer_client": self.active_peer_client,
-                    "share_name": self.share_selector_combo.currentText(), 
+                    "share_name": self.share_selector_combo.currentText(),
                     "dest_path": dest_path,
-                    "conflict_action": "ask"  # 添加冲突处理选项
+                    "conflict_action": "ask",  # 添加冲突处理选项
                 }
                 tasks.append(task)
             elif os.path.isfile(local_path):
                 # 处理文件
                 task = {
-                    "type": "upload_file", 
+                    "type": "upload_file",
                     "name": os.path.basename(local_path),
-                    "local_path": local_path, 
+                    "local_path": local_path,
                     "peer_client": self.active_peer_client,
-                    "share_name": self.share_selector_combo.currentText(), 
+                    "share_name": self.share_selector_combo.currentText(),
                     "dest_path": dest_path,
-                    "conflict_action": "ask"  # 添加冲突处理选项
+                    "conflict_action": "ask",  # 添加冲突处理选项
                 }
                 tasks.append(task)
-                
+
         if tasks:
             self.start_worker_thread("正在上传拖放的项目...", tasks)

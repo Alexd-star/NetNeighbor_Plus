@@ -1,12 +1,14 @@
-# 文件: core/event_bus.py (全新文件)
+# 文件: core/event_bus.py
 # 描述: 一个极简的、用于模块间解耦的事件总线。
 
 from typing import Callable, Dict, List
+
 
 class EventBus:
     """
     一个简单的发布/订阅模式事件总线。
     """
+
     def __init__(self):
         # 使用字典来存储每个事件类型对应的所有回调函数
         self._subscribers: Dict[str, List[Callable]] = {}
@@ -27,6 +29,7 @@ class EventBus:
                 except Exception as e:
                     # 打印错误，但确保一个回调的失败不会影响其他回调
                     print(f"Error in event bus callback for '{event_type}': {e}")
+
 
 # 创建一个全局唯一的事件总线实例，供整个应用使用
 bus = EventBus()

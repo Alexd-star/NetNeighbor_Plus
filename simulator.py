@@ -1,15 +1,15 @@
-import time
 import socket
-from zeroconf import ServiceInfo, Zeroconf
 import threading
+import time
+
+from zeroconf import ServiceInfo, Zeroconf
+
 
 # --- 配置 ---
-NUM_DEVICES_TO_SIMULATE = 200  # 您可以按需修改，比如改成500来做极限测试
+NUM_DEVICES_TO_SIMULATE = 200
 SERVICE_TYPE = "_netneighbor._tcp.local."
 BASE_PORT = 9000
 
-
-# -------------
 
 def register_service(zeroconf, service_name, port):
     """注册一个模拟的设备服务"""
@@ -19,10 +19,10 @@ def register_service(zeroconf, service_name, port):
         full_service_name = f"{service_name}.{SERVICE_TYPE}"
 
         properties = {
-            'os': 'SimulatedOS',
-            'user': 'simulator',
-            'tcp_port': str(port + 1),
-            'dev_type': 'Simulator'
+            "os": "SimulatedOS",
+            "user": "simulator",
+            "tcp_port": str(port + 1),
+            "dev_type": "Simulator",
         }
 
         service_info = ServiceInfo(
@@ -30,7 +30,7 @@ def register_service(zeroconf, service_name, port):
             full_service_name,
             addresses=[socket.inet_aton(fake_ip)],
             port=port,
-            properties=properties
+            properties=properties,
         )
         zeroconf.register_service(service_info)
         print(f"  -> 已注册模拟设备: {service_name} on port {port}")
@@ -52,7 +52,9 @@ def main():
         service_name = f"Simulated-PC-{i + 1}"
         port = BASE_PORT + i
         # 使用线程来加速注册过程
-        thread = threading.Thread(target=register_service, args=(zeroconf, service_name, port))
+        thread = threading.Thread(
+            target=register_service, args=(zeroconf, service_name, port)
+        )
         threads.append(thread)
         thread.start()
 

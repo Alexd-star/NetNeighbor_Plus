@@ -1,10 +1,12 @@
-# 文件: core/config_loader.py (已重构，支持用户专属配置)
+# 文件: core/config_loader.py
 import os
 import platform
 import socket
-import toml
-from typing import Optional, Dict, Any
 import threading
+from typing import Optional, Dict, Any
+
+import toml
+
 
 # 全局配置变量和用于保护它的锁
 _config: Optional[Dict[str, Any]] = None
@@ -16,10 +18,10 @@ def get_config_dir() -> str:
     system = platform.system()
     if system == "Windows":
         # C:\Users\用户名\AppData\Roaming\NetNeighbor_Plus
-        path = os.path.join(os.environ['APPDATA'], 'NetNeighbor_Plus')
+        path = os.path.join(os.environ["APPDATA"], "NetNeighbor_Plus")
     else:
         # ~/.config/NetNeighbor_Plus (for Linux, macOS)
-        path = os.path.join(os.path.expanduser('~'), '.config', 'NetNeighbor_Plus')
+        path = os.path.join(os.path.expanduser("~"), ".config", "NetNeighbor_Plus")
 
     os.makedirs(path, exist_ok=True)
     return path
@@ -39,11 +41,8 @@ def create_default_config() -> Dict[str, Any]:
         hostname = "My-New-PC"
 
     return {
-        "service": {
-            "name": hostname,
-            "port": 8080
-        },
-        "shares": []  # 首次运行时，共享列表为空，等待用户添加
+        "service": {"name": hostname, "port": 8080},
+        "shares": [],  # 首次运行时，共享列表为空，等待用户添加
     }
 
 
@@ -56,15 +55,13 @@ def load_config(force_reload: bool = False) -> Dict[str, Any]:
     with _config_lock:
         if _config is None or force_reload:
             try:
-                with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
+                with open(CONFIG_PATH, "r", encoding="utf-8") as f:
                     _config = toml.load(f)
-                # 移除配置文件加载的打印信息
-                # print(f"配置文件 '{CONFIG_PATH}' 已{'重新' if force_reload else ''}加载。")
             except FileNotFoundError:
                 print(f"未找到配置文件于 '{CONFIG_PATH}'")
                 _config = create_default_config()
                 try:
-                    with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
+                    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
                         toml.dump(_config, f)
                     print(f"新的配置文件已成功创建于: {CONFIG_PATH}")
                 except Exception as e:
