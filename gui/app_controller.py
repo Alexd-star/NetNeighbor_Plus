@@ -147,7 +147,7 @@ class AppController(QObject):
         QTimer.singleShot(500, self._start_delayed_services)
 
         self.is_running = True
-        
+
     def _start_delayed_services(self):
         """延迟启动非关键服务，避免阻塞UI"""
         # 启动设备发现服务
@@ -155,7 +155,7 @@ class AppController(QObject):
             host_ip = socket.gethostbyname(socket.gethostname())
         except socket.gaierror:
             host_ip = "127.0.0.1"
-            
+
         self.discovery_service = DiscoveryService(
             host_ip, self.port, self.service_name, self.device_properties
         )
@@ -215,16 +215,16 @@ class AppController(QObject):
         def on_change(delete_events=None):
             if not self.is_running or self.stop_event.is_set():
                 return
-            
+
             # 处理文件变更通知
             event_data = {"event": "refresh_files"}
-            
+
             # 如果有删除事件，添加到事件数据中
             if delete_events and len(delete_events) > 0:
                 # 获取共享配置，用于确定删除的文件属于哪个共享
                 shares = get_shares()
                 share_paths = {s["path"]: s["name"] for s in shares}
-                
+
                 # 收集删除事件信息
                 deleted_files = []
                 for event in delete_events:
@@ -241,11 +241,11 @@ class AppController(QObject):
                                 }
                             )
                             break
-                
+
                 # 如果有删除文件，添加到事件数据中
                 if deleted_files:
                     event_data["deleted_files"] = deleted_files
-            
+
             try:
                 loop = getattr(fastapi_app.state, "asyncio_loop", None)
                 if loop and loop.is_running():

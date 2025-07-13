@@ -23,7 +23,7 @@ class DebouncedChangeHandler(FileSystemEventHandler):
         # 忽略目录自身的修改事件，只关心内容变化
         if event.is_directory:
             return
-            
+
         # 检查是否是删除事件
         if event.event_type == "deleted":
             # 记录删除事件

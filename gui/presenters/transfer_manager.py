@@ -537,6 +537,11 @@ class TransferManager(QObject):
         # 如果是活动任务
         if self.worker_thread and task_index == 0:
             self.worker_thread.stop()
+            # 添加日志
+            if self.active_tasks:
+                task_id = list(self.active_tasks.keys())[0]
+                task = self.active_tasks[task_id]
+                self.log_model.add_log(f"已取消任务: {task['name']}", "❌")
             return
 
         # 如果是队列中的任务

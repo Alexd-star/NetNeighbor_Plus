@@ -349,12 +349,6 @@ class TransferListView(QWidget):
         if self.download_icon and self.upload_icon:
             task_item.set_icons(self.download_icon, self.upload_icon)
 
-        # 连接取消按钮信号
-        item_index = self.task_list.count()
-        task_item.get_cancel_button().clicked.connect(
-            lambda: self.task_cancelled.emit(item_index)
-        )
-
         # 创建列表项
         list_item = QListWidgetItem()
         self.task_list.addItem(list_item)
@@ -372,7 +366,22 @@ class TransferListView(QWidget):
         # 存储任务项
         self.task_items[task_id] = task_item
 
-        return item_index
+        # 连接取消按钮信号（在发射信号时确定item_index）
+        task_item.get_cancel_button().clicked.connect(
+            lambda: self._on_cancel_button_clicked(task_id)
+        )
+
+        return self.task_list.count() - 1
+
+    def _on_cancel_button_clicked(self, task_id: str):
+        """处理取消按钮点击事件"""
+        # 找到对应的列表项索引
+        for i in range(self.task_list.count()):
+            item = self.task_list.item(i)
+            if self.task_list.itemWidget(item) == self.task_items[task_id]:
+                # 发射任务取消信号
+                self.task_cancelled.emit(i)
+                break
 
     def update_task_progress(self, task_id: str, value: int):
         """更新任务进度"""

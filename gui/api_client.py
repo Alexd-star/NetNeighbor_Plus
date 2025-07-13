@@ -71,21 +71,21 @@ class TarUploader:
     """
 
     def __init__(
-            self,
-            folder_path: str,
-            progress_callback: Optional[Callable[[int], None]] = None,
+        self,
+        folder_path: str,
+        progress_callback: Optional[Callable[[int], None]] = None,
         chunk_size: int = 65536,  # 64KB
     ):
         self.folder_path = folder_path
         self.progress_callback = progress_callback
         self.chunk_size = chunk_size
         self.total_size = self._calculate_total_size()
-        
+
         # 创建管道用于流式处理
         self.read_pipe, self.write_pipe = os.pipe()
         self.tar_thread = None
         self._start_tar_thread()
-    
+
     def _calculate_total_size(self):
         """计算文件夹中所有文件的总大小"""
         total = 0
@@ -95,7 +95,7 @@ class TarUploader:
                 if os.path.isfile(file_path):
                     total += os.path.getsize(file_path)
         return total
-    
+
     def _start_tar_thread(self):
         """在后台线程中启动tar打包过程"""
 
@@ -110,12 +110,12 @@ class TarUploader:
                         tar.add(self.folder_path, arcname=folder_name, recursive=True)
             except Exception as e:
                 print(f"Tar打包过程出错: {e}")
-                
+
         # 启动打包线程
         self.tar_thread = threading.Thread(target=tar_worker)
         self.tar_thread.daemon = True
         self.tar_thread.start()
-    
+
     def read(self, size: int = -1) -> bytes:
         """读取指定大小的数据块"""
         try:
@@ -127,16 +127,16 @@ class TarUploader:
         except Exception as e:
             print(f"读取tar数据时出错: {e}")
             return b""
-    
+
     def __len__(self):
         """返回tar文件的总大小（估计值）"""
         # 由于流式处理，无法精确知道tar的大小，返回原始文件大小的估计值
         # tar格式会有一些额外的头信息，所以增加10%作为估计
         return int(self.total_size * 1.1)
-    
+
     def __enter__(self):
         return self
-    
+
     def __exit__(self, exc_type, exc_val, exc_tb):
         """确保资源被正确释放"""
         try:
@@ -144,7 +144,7 @@ class TarUploader:
             if hasattr(self, "read_pipe") and self.read_pipe is not None:
                 os.close(self.read_pipe)
                 self.read_pipe = None
-                
+
             # 等待tar线程完成
             if self.tar_thread and self.tar_thread.is_alive():
                 self.tar_thread.join(1.0)  # 等待最多1秒
@@ -154,9 +154,9 @@ class TarUploader:
 
 class UploadStreamer:
     def __init__(
-            self,
-            file_path: str,
-            progress_callback: Optional[Callable[[int], None]] = None,
+        self,
+        file_path: str,
+        progress_callback: Optional[Callable[[int], None]] = None,
         chunk_size: int = 4096,
     ):
         self.file_path = file_path
@@ -205,7 +205,7 @@ class ApiClient:
         except (httpx.RequestError, httpx.HTTPStatusError) as e:
             print(f"错误: 请求设备列表失败 - {e}")
             return None
-            
+
     def get_ping(self) -> bool:
         """发送ping请求，用于测量延迟"""
         try:
@@ -245,7 +245,7 @@ class ApiClient:
         except Exception as e:
             print(f"错误: 请求文件列表'{share_name}{path}'失败 - 未知错误: {e}")
             return None
-            
+
     def delete_file(self, share_name: str, file_path: str) -> bool:
         """删除远程文件或文件夹"""
         try:
@@ -257,7 +257,7 @@ class ApiClient:
         except Exception as e:
             print(f"删除文件失败: {e}")
             return False
-            
+
     def rename_file(self, share_name: str, file_path: str, new_name: str) -> bool:
         """重命名远程文件或文件夹"""
         try:
@@ -269,7 +269,7 @@ class ApiClient:
         except Exception as e:
             print(f"重命名文件失败: {e}")
             return False
-            
+
     def check_folder_exists(
         self, share_name: str, dest_path: str, folder_name: str
     ) -> bool:
@@ -308,7 +308,7 @@ class ApiClient:
         response = self.client.post(url, params=params, files=files, timeout=None)
         response.raise_for_status()
         return response.json()
-        
+
     def check_file_exists(self, share_name: str, dest_path: str, filename: str):
         """检查远程目录中是否已存在同名文件"""
         url = f"{self.base_url}/api/v1/upload/{share_name}"
@@ -322,7 +322,7 @@ class ApiClient:
             return response.json().get("exists", False)
         except Exception:
             return False
-            
+
     def create_directory(self, share_name: str, path: str) -> bool:
         """在远程创建目录"""
         url = f"{self.base_url}/api/v1/create_dir/{share_name}"
@@ -334,7 +334,7 @@ class ApiClient:
         except Exception as e:
             print(f"创建目录失败: {e}")
             return False
-            
+
     def notify_shares_changed(self) -> bool:
         """通知服务器共享配置已更改"""
         try:
@@ -345,7 +345,7 @@ class ApiClient:
         except Exception as e:
             print(f"通知共享变更失败: {e}")
             return False
-            
+
     def notify_file_changed(self, share_name: str, path: str) -> bool:
         """通知服务器文件已更改"""
         try:
@@ -381,7 +381,7 @@ class ApiClient:
 
         # 返回一个全新的、管理着TCP连接的下载器对象
         return TcpDownloader(host, tcp_port, request_header)
-        
+
     def upload_folder_tar(
         self,
         share_name: str,
@@ -392,11 +392,11 @@ class ApiClient:
         """通过tar流式上传整个文件夹"""
         url = f"{self.base_url}/api/v1/upload_folder_tar/{share_name}"
         params = {"dest_path": dest_path, "conflict_action": conflict_action}
-        
+
         # 使用文件夹名称作为tar文件名
         folder_name = os.path.basename(uploader.folder_path)
         files = {"file": (f"{folder_name}.tar", uploader, "application/x-tar")}
-        
+
         response = self.client.post(url, params=params, files=files, timeout=None)
         response.raise_for_status()
         return response.json()

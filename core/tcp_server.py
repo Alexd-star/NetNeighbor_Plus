@@ -39,8 +39,8 @@ def get_safe_path_for_tcp(share_name: str, sub_path: str = "/") -> Tuple[str, di
 
 
 async def _drain_stream(
-        proc_stream: asyncio.StreamReader,
-        stream_name: str,
+    proc_stream: asyncio.StreamReader,
+    stream_name: str,
     client_writer: asyncio.StreamWriter = None,
 ):
     """一个通用的协程，用于排干子进程的一个流（stdout 或 stderr）。"""
