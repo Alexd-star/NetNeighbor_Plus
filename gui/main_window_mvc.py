@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
-    QSplitter,
+    QSplitter,  
     QStackedWidget,
     QLabel,
     QMessageBox,
@@ -23,27 +23,32 @@ from PySide6.QtWidgets import (
 
 from core.config_loader import load_config, CONFIG_PATH
 from gui.app_controller import AppController
+# 关键模型 - 立即导入
 from gui.models.device_model import DeviceModel
 from gui.models.file_model import FileModel
 from gui.models.connection_model import ConnectionModel
 from gui.models.log_model import LogModel
 from gui.models.share_model import ShareModel, RemoteShareModel
 from gui.models.transfer_model import TransferModel
-from gui.presenters.connection_presenter import ConnectionPresenter
-from gui.presenters.device_presenter import DevicePresenter
-from gui.presenters.file_browser_presenter import FileBrowserPresenter
-from gui.presenters.log_presenter import LogPresenter
-from gui.presenters.share_presenter import SharePresenter
-from gui.presenters.status_presenter import StatusPresenter
-from gui.presenters.transfer_manager import TransferManager
-from gui.settings_window import SettingsWindow
+# 关键视图 - 立即导入
 from gui.views.device_list_view import DeviceListView
-from gui.views.file_browser_view import FileBrowserView
-from gui.views.log_view import LogView
 from gui.views.share_list_view import ShareListView
 from gui.views.status_view import StatusView
-from gui.views.transfer_list_view import TransferListView
 from gui.views.welcome_view import WelcomeView
+# 关键Presenter - 立即导入
+from gui.presenters.device_presenter import DevicePresenter
+from gui.presenters.share_presenter import SharePresenter
+from gui.presenters.status_presenter import StatusPresenter
+from gui.presenters.connection_presenter import ConnectionPresenter
+
+# 非关键组件 - 延迟导入
+# from gui.presenters.file_browser_presenter import FileBrowserPresenter
+# from gui.presenters.log_presenter import LogPresenter
+# from gui.presenters.transfer_manager import TransferManager
+# from gui.settings_window import SettingsWindow
+# from gui.views.file_browser_view import FileBrowserView
+# from gui.views.log_view import LogView
+# from gui.views.transfer_list_view import TransferListView
 
 
 class MainWindowMVC(QMainWindow):
@@ -60,6 +65,24 @@ class MainWindowMVC(QMainWindow):
         self.log_presenter = None
         self.file_browser_presenter = None
         self.transfer_manager = None
+
+        # 防抖机制相关变量
+        self._last_device_count_update = 0
+        self._device_count_update_timer = None
+        self._pending_device_count = 0
+
+        # UI批量更新机制
+        self._pending_ui_updates = set()
+        self._ui_update_timer = None
+        self._max_ui_updates_per_second = 10  # 限制UI更新频率
+
+        # 自适应性能调整
+        self._adaptive_performance_enabled = True
+
+        # 设备发现限流机制
+        self._device_batch_size = 10  # 批量处理设备数量
+        self._device_batch_timer = None
+        self._pending_device_events = []
 
         # 创建关键模型
         self.device_model = DeviceModel()
@@ -88,20 +111,27 @@ class MainWindowMVC(QMainWindow):
             self.connection_model, self.remote_share_model, self.log_model
         )
 
-        # 设置UI
+        # 设置关键UI组件
         self._setup_ui()
-        self._setup_menu()
-        self._setup_status_bar()
-        self._setup_icons()
+        self._setup_status_bar()  # 状态栏优先显示
 
-        # 更新本地共享列表
-        self.share_model.reload_shares()
+        # 延迟设置非关键UI组件
+        QTimer.singleShot(10, self._setup_menu)
+        QTimer.singleShot(20, self._setup_icons)
 
-        # 使用QTimer延迟初始化非关键组件
-        QTimer.singleShot(200, self._delayed_init)
+        # 延迟更新本地共享列表，避免阻塞UI显示
+        QTimer.singleShot(30, self.share_model.reload_shares)
+
+        # 使用QTimer延迟初始化非关键组件，减少延迟时间
+        QTimer.singleShot(80, self._delayed_init)
 
     def _delayed_init(self):
         """延迟初始化非关键组件"""
+        # 懒导入非关键视图
+        from gui.views.log_view import LogView
+        from gui.views.file_browser_view import FileBrowserView
+        from gui.views.transfer_list_view import TransferListView
+
         # 创建非关键视图
         self.log_view = LogView()
         self.file_browser_view = FileBrowserView()
@@ -115,6 +145,11 @@ class MainWindowMVC(QMainWindow):
 
         # 添加文件浏览器视图到堆叠窗口
         self.stacked_widget.addWidget(self.file_browser_view)
+
+        # 懒导入非关键Presenter
+        from gui.presenters.log_presenter import LogPresenter
+        from gui.presenters.file_browser_presenter import FileBrowserPresenter
+        from gui.presenters.transfer_manager import TransferManager
 
         # 创建非关键Presenter
         self.log_presenter = LogPresenter(self.log_model, self.log_view)
@@ -132,6 +167,8 @@ class MainWindowMVC(QMainWindow):
             self.download_icon,
             self.folder_icon,
             self.file_icon,
+            self.upload_file_icon,
+            self.upload_folder_icon,
         )
 
         # 创建传输管理器
@@ -173,7 +210,11 @@ class MainWindowMVC(QMainWindow):
         except AttributeError:
             self.setGeometry(100, 100, 1100, 680)
 
-        # 加载样式表
+        # 延迟加载样式表，避免阻塞UI显示
+        QTimer.singleShot(5, self._load_stylesheet)
+
+    def _load_stylesheet(self):
+        """延迟加载样式表"""
         try:
             with open("gui/style.qss", "r", encoding="utf-8") as f:
                 self.setStyleSheet(f.read())
@@ -243,6 +284,11 @@ class MainWindowMVC(QMainWindow):
         about_action = help_menu.addAction("关于...")
         about_action.triggered.connect(self._show_about)
 
+        # 存储菜单动作以便后续设置图标
+        self.settings_action = settings_action
+        self.exit_action = exit_action
+        self.about_action = about_action
+
     def _setup_status_bar(self):
         """设置状态栏"""
         self.status_bar = QStatusBar()
@@ -273,26 +319,44 @@ class MainWindowMVC(QMainWindow):
         self.status_bar.addPermanentWidget(self.transfer_status_button)
 
     def _setup_icons(self):
-        """设置图标"""
+        """设置图标 - 批量获取以提高效率"""
         style = self.style()
-        self.folder_icon = style.standardIcon(QStyle.StandardPixmap.SP_DirIcon)
-        self.file_icon = style.standardIcon(QStyle.StandardPixmap.SP_FileIcon)
-        self.back_icon = style.standardIcon(QStyle.StandardPixmap.SP_ArrowLeft)
-        self.upload_icon = style.standardIcon(QStyle.StandardPixmap.SP_ArrowUp)
-        self.download_icon = style.standardIcon(QStyle.StandardPixmap.SP_ArrowDown)
-        self.device_icon = style.standardIcon(QStyle.StandardPixmap.SP_DriveNetIcon)
-        self.refresh_icon = style.standardIcon(QStyle.StandardPixmap.SP_BrowserReload)
-        self.settings_icon = style.standardIcon(
-            QStyle.StandardPixmap.SP_FileDialogDetailedView
-        )
-        self.delete_icon = style.standardIcon(QStyle.StandardPixmap.SP_TrashIcon)
-        self.rename_icon = style.standardIcon(
-            QStyle.StandardPixmap.SP_FileDialogContentsView
-        )
+
+        # 批量获取所有需要的图标
+        icon_mappings = {
+            'folder_icon': QStyle.StandardPixmap.SP_DirIcon,
+            'file_icon': QStyle.StandardPixmap.SP_FileIcon,
+            'back_icon': QStyle.StandardPixmap.SP_ArrowLeft,
+            'upload_icon': QStyle.StandardPixmap.SP_ArrowUp,
+            'download_icon': QStyle.StandardPixmap.SP_ArrowDown,
+            'device_icon': QStyle.StandardPixmap.SP_DriveNetIcon,
+            'refresh_icon': QStyle.StandardPixmap.SP_BrowserReload,
+            'settings_icon': QStyle.StandardPixmap.SP_FileDialogDetailedView,
+            'delete_icon': QStyle.StandardPixmap.SP_TrashIcon,
+            'rename_icon': QStyle.StandardPixmap.SP_FileDialogContentsView,
+            # 菜单图标
+            'exit_icon': QStyle.StandardPixmap.SP_DialogCloseButton,
+            'about_icon': QStyle.StandardPixmap.SP_MessageBoxInformation,
+            # 上传菜单图标
+            'upload_file_icon': QStyle.StandardPixmap.SP_FileIcon,
+            'upload_folder_icon': QStyle.StandardPixmap.SP_DirIcon,
+        }
+
+        # 一次性设置所有图标
+        for attr_name, pixmap in icon_mappings.items():
+            setattr(self, attr_name, style.standardIcon(pixmap))
 
         # 设置图标到关键Presenter
         self.device_presenter.set_device_icon(self.device_icon)
         self.share_presenter.set_folder_icon(self.folder_icon)
+
+        # 设置菜单项图标
+        if hasattr(self, 'settings_action'):
+            self.settings_action.setIcon(self.settings_icon)
+        if hasattr(self, 'exit_action'):
+            self.exit_action.setIcon(self.exit_icon)
+        if hasattr(self, 'about_action'):
+            self.about_action.setIcon(self.about_icon)
 
     def _setup_connections(self):
         """设置信号连接"""
@@ -383,10 +447,17 @@ class MainWindowMVC(QMainWindow):
         if not peers:
             return
 
-        my_service_name = f"{self.controller.service_name}._netneighbor._tcp.local."
-        for name, data in peers.items():
-            if name != my_service_name:
-                self.device_model.add_device(name, data)
+        # 启用批量更新模式以提高性能
+        self.device_model.enable_batch_updates()
+
+        try:
+            my_service_name = f"{self.controller.service_name}._netneighbor._tcp.local."
+            for name, data in peers.items():
+                if name != my_service_name:
+                    self.device_model.add_device(name, data)
+        finally:
+            # 禁用批量更新模式，触发视图更新
+            self.device_model.disable_batch_updates()
 
         # 更新状态栏显示设备数量
         self._update_device_count_status()
@@ -461,20 +532,13 @@ class MainWindowMVC(QMainWindow):
         self.stacked_widget.setCurrentWidget(self.welcome_view)
 
     def _on_websocket_message(self, data, event, source):
-        """处理WebSocket消息"""
-        if event == "peer_online":
-            # 检查是否为本机设备
-            my_service_name = f"{self.controller.service_name}._netneighbor._tcp.local."
-            if data["name"] != my_service_name:
-                # 添加设备（非本机）
-                self.device_model.add_device(data["name"], data["data"])
-            # 更新状态栏
-            self._update_device_count_status()
-        elif event == "peer_offline":
-            # 移除设备
-            self.device_model.remove_device(data["name"])
-            # 更新状态栏
-            self._update_device_count_status()
+        """处理WebSocket消息 - 使用批量处理优化性能"""
+        if event in ["peer_online", "peer_offline"]:
+            # 将设备事件加入批量处理队列
+            self._pending_device_events.append((event, data))
+
+            # 启动批量处理定时器
+            self._schedule_device_batch_processing()
         elif event == "refresh_files":
             # 防抖处理，避免短时间内重复刷新
             if not hasattr(self, "_last_refresh_time"):
@@ -498,14 +562,120 @@ class MainWindowMVC(QMainWindow):
                 self._refresh_shares()
 
     def _update_device_count_status(self):
-        """更新状态栏中的设备计数"""
+        """更新状态栏中的设备计数 - 使用防抖机制避免频繁更新"""
         devices_count = self.device_model.get_device_count()
+        self._pending_device_count = devices_count
+
+        # 立即更新状态栏（不防抖）
         if devices_count > 0:
             self.status_bar_label.setText(f"已发现 {devices_count} 个设备")
-            if self.log_presenter:
-                self.log_presenter.add_log(f"网络中有 {devices_count} 个设备在线", "🔍")
         else:
             self.status_bar_label.setText("正在扫描局域网设备...")
+
+        # 防抖日志输出 - 500ms内只输出一次
+        current_time = time.time()
+        if current_time - self._last_device_count_update < 0.5:
+            # 取消之前的定时器
+            if self._device_count_update_timer:
+                self._device_count_update_timer.stop()
+
+        # 设置新的定时器
+        self._device_count_update_timer = QTimer()
+        self._device_count_update_timer.setSingleShot(True)
+        self._device_count_update_timer.timeout.connect(self._delayed_device_count_log)
+        self._device_count_update_timer.start(500)  # 500ms延迟
+
+        self._last_device_count_update = current_time
+
+    def _delayed_device_count_log(self):
+        """延迟输出设备计数日志"""
+        if self._pending_device_count > 0 and self.log_presenter:
+            log_message = f"网络中有 {self._pending_device_count} 个设备在线"
+            self.log_presenter.add_log(log_message, "🔍")
+
+    def _schedule_ui_update(self, update_type: str):
+        """调度UI更新 - 批量处理以提高性能"""
+        self._pending_ui_updates.add(update_type)
+
+        # 如果已有定时器在运行，不需要重新创建
+        if self._ui_update_timer and self._ui_update_timer.isActive():
+            return
+
+        # 自适应调整更新频率
+        update_interval = self._get_adaptive_update_interval()
+
+        self._ui_update_timer = QTimer()
+        self._ui_update_timer.setSingleShot(True)
+        self._ui_update_timer.timeout.connect(self._process_pending_ui_updates)
+        self._ui_update_timer.start(update_interval)
+
+    def _get_adaptive_update_interval(self) -> int:
+        """固定快速更新间隔，不再自适应调整"""
+        return 16  # 约60 FPS，提供流畅的用户体验
+
+    def _process_pending_ui_updates(self):
+        """处理待处理的UI更新"""
+        if not self._pending_ui_updates:
+            return
+
+        # 批量处理所有待处理的更新
+        updates_to_process = self._pending_ui_updates.copy()
+        self._pending_ui_updates.clear()
+
+        for update_type in updates_to_process:
+            if update_type == "device_count":
+                self._update_device_count_status()
+            # 可以在这里添加其他类型的UI更新
+
+        # 如果还有待处理的更新，继续调度
+        if self._pending_ui_updates:
+            self._schedule_ui_update(next(iter(self._pending_ui_updates)))
+
+    def _schedule_device_batch_processing(self):
+        """调度设备批量处理"""
+        # 如果已有定时器在运行，不需要重新创建
+        if self._device_batch_timer and self._device_batch_timer.isActive():
+            return
+
+        # 使用固定的快速处理间隔，不再根据设备数量调整
+        batch_interval = 10  # 10ms快速处理，提高响应速度
+
+        self._device_batch_timer = QTimer()
+        self._device_batch_timer.setSingleShot(True)
+        self._device_batch_timer.timeout.connect(self._process_device_batch)
+        self._device_batch_timer.start(batch_interval)
+
+    def _process_device_batch(self):
+        """批量处理设备事件"""
+        if not self._pending_device_events:
+            return
+
+        # 启用批量更新模式
+        self.device_model.enable_batch_updates()
+
+        try:
+            # 处理所有待处理的设备事件
+            events_to_process = self._pending_device_events.copy()
+            self._pending_device_events.clear()
+
+            my_service_name = f"{self.controller.service_name}._netneighbor._tcp.local."
+
+            for event, data in events_to_process:
+                if event == "peer_online":
+                    # 检查是否为本机设备
+                    if data["name"] != my_service_name:
+                        # 添加设备（非本机）
+                        self.device_model.add_device(data["name"], data["data"])
+                elif event == "peer_offline":
+                    # 移除设备
+                    self.device_model.remove_device(data["name"])
+
+        finally:
+            # 禁用批量更新模式，触发UI更新
+            self.device_model.disable_batch_updates()
+
+            # 批量更新UI
+            self._schedule_ui_update("device_count")
 
     def _is_transferring(self):
         """检查是否正在传输文件"""
@@ -727,6 +897,8 @@ class MainWindowMVC(QMainWindow):
 
     def _open_settings(self):
         """打开设置窗口"""
+        # 懒导入设置窗口
+        from gui.settings_window import SettingsWindow
         dialog = SettingsWindow(self.controller, self)
         if dialog.exec():
             self.controller.running_config = load_config(force_reload=True)

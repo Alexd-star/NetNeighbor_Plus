@@ -10,6 +10,16 @@ from typing import Dict, Any, List, Optional
 
 from PySide6.QtCore import QThread, Signal
 
+from .conflict_resolver import (
+    ConflictResolver,
+    check_file_exists_safe,
+    check_folder_exists_safe,
+    apply_conflict_action_to_tasks,
+    create_file_info,
+    should_skip_conflict_check,
+    is_conflict_cancelled
+)
+
 
 class WorkerThread(QThread):
     """
@@ -31,8 +41,16 @@ class WorkerThread(QThread):
         self.tasks = tasks
         self.has_errors = False
         self._is_running = True
-        self.conflict_resolution_result = None
-        self.conflict_resolution_event = threading.Event()
+
+        # 使用新的冲突解决器
+        self.conflict_resolver = ConflictResolver()
+        self.conflict_resolver.conflict_resolution_needed.connect(
+            lambda file_info, event: self.conflict_resolution_needed.emit(file_info, event)
+        )
+
+    def set_conflict_resolution_result(self, result):
+        """设置冲突解决结果"""
+        self.conflict_resolver.set_resolution_result(result)
 
     def _format_size(self, size_bytes):
         """格式化文件大小为人类可读的形式"""
@@ -267,52 +285,22 @@ class WorkerThread(QThread):
         # 添加进度文本更新，让用户知道当前状态
         self.progress_text_update.emit(f"正在准备上传文件夹: {folder_name}")
 
-        # 检查文件夹是否已存在
+        # 检查文件夹是否已存在并处理冲突
         if conflict_action == "ask":
-            folder_exists = False
-            try:
-                # 使用安全的方式检查文件夹是否存在
-                folder_exists = p_client.check_folder_exists(
-                    s_name, base_dest, folder_name
-                )
-            except Exception as e:
-                print(f"检查文件夹是否存在时出错: {e}")
-                # 如果检查失败，尝试使用备用方法检查
-                try:
-                    # 构建完整路径
-                    full_path = f"{base_dest}/{folder_name}".replace("//", "/")
-                    # 尝试获取该路径的文件列表，如果成功则说明文件夹存在
-                    files = p_client.get_files(s_name, full_path)
-                    folder_exists = files is not None
-                except Exception:
-                    # 如果两种方法都失败，假设文件夹不存在
-                    folder_exists = False
+            folder_exists = check_folder_exists_safe(p_client, s_name, base_dest, folder_name)
 
             if folder_exists:
-                # 使用冲突解决机制
-                file_info = {"file_name": folder_name, "is_folder": True}
+                file_info = create_file_info(folder_name, is_folder=True)
+                conflict_result = self.conflict_resolver.resolve_conflict(file_info)
 
-                # 创建事件对象用于线程同步
-                event = threading.Event()
-
-                # 发射信号请求主线程处理冲突
-                self.conflict_resolution_needed.emit(file_info, event)
-
-                # 等待主线程处理完成
-                event.wait()
-
-                # 获取处理结果
-                conflict_result = self.conflict_resolution_result
-
-                # 重置结果
-                self.conflict_resolution_result = None
-
-                # 根据用户选择设置冲突处理方式
-                if conflict_result.get("action") == "cancelled":
-                    # 用户取消了对话框
+                if is_conflict_cancelled(conflict_result):
                     return
 
                 conflict_action = conflict_result.get("action", "skip")
+
+                # 如果用户选择应用到所有冲突，更新所有后续任务
+                if conflict_result.get("apply_to_all"):
+                    apply_conflict_action_to_tasks(self.tasks, conflict_action, "upload_folder")
 
         # 如果用户选择跳过，则直接返回
         if conflict_action == "skip":
@@ -455,49 +443,22 @@ class WorkerThread(QThread):
         dest_path = task_info["dest_path"]
         conflict_action = task_info.get("conflict_action", "ask")
 
-        # 检查文件是否已存在
+        # 检查文件是否已存在并处理冲突
         if conflict_action == "ask":
-            # 检查文件是否存在
-            file_exists = False
-            try:
-                file_exists = p_client.check_file_exists(s_name, dest_path, file_name)
-            except Exception as e:
-                print(f"检查文件是否存在时出错: {e}")
+            file_exists = check_file_exists_safe(p_client, s_name, dest_path, file_name)
 
             if file_exists:
-                # 使用新的冲突解决机制
-                file_info = {"file_name": file_name, "is_folder": False}
+                file_info = create_file_info(file_name, is_folder=False)
+                conflict_result = self.conflict_resolver.resolve_conflict(file_info)
 
-                # 创建事件对象用于线程同步
-                event = threading.Event()
-
-                # 发射信号请求主线程处理冲突
-                self.conflict_resolution_needed.emit(file_info, event)
-
-                # 等待主线程处理完成
-                event.wait()
-
-                # 获取处理结果
-                conflict_result = self.conflict_resolution_result
-
-                # 重置结果
-                self.conflict_resolution_result = None
-
-                # 根据用户选择设置冲突处理方式
-                if conflict_result.get("action") == "cancelled":
-                    # 用户取消了对话框
+                if is_conflict_cancelled(conflict_result):
                     return
 
                 conflict_action = conflict_result.get("action", "skip")
 
-                # 如果用户选择应用到所有冲突，更新任务信息
+                # 如果用户选择应用到所有冲突，更新所有后续任务
                 if conflict_result.get("apply_to_all"):
-                    # 更新所有后续任务的冲突处理方式
-                    for task in self.tasks:
-                        if task.get("type") == "upload_file" and not task.get(
-                            "processed", False
-                        ):
-                            task["conflict_action"] = conflict_action
+                    apply_conflict_action_to_tasks(self.tasks, conflict_action, "upload_file")
 
                 # 如果用户选择跳过，直接返回
                 if conflict_action == "skip":

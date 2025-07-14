@@ -21,6 +21,7 @@ from fastapi import (
 from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
 
 from .config_loader import load_config
+from .path_utils import get_safe_path_and_share
 from .discovery import online_devices
 from .tcp_server import run_tcp_server
 
@@ -66,26 +67,7 @@ async def startup_event():
     loop.create_task(run_tcp_server(tcp_port, tcp_stop_event))
 
 
-def get_safe_path_and_share(
-    share_name: str, sub_path: str = "/"
-) -> Tuple[str, Dict[str, Any]]:
-    """安全地解析请求的路径, 防止路径遍历, 并返回共享配置。"""
-    all_shares = load_config(force_reload=True).get("shares", [])
-    target_share = next((s for s in all_shares if s.get("name") == share_name), None)
-
-    if not target_share:
-        raise HTTPException(status_code=404, detail=f"Share '{share_name}' not found")
-
-    base_path = os.path.abspath(target_share["path"])
-    safe_sub_path = os.path.normpath(sub_path.lstrip("/\\"))
-    full_path = os.path.join(base_path, safe_sub_path)
-
-    if not os.path.abspath(full_path).startswith(base_path):
-        raise HTTPException(
-            status_code=403, detail="Access denied: Path traversal attempt detected."
-        )
-
-    return full_path, target_share
+# 路径安全验证函数已移至 path_utils.py
 
 
 def iter_folder_as_tar(folder_path: str) -> Generator[bytes, None, None]:
@@ -171,12 +153,12 @@ async def websocket_endpoint(websocket: WebSocket):
         manager.disconnect(websocket)
 
 
-@app.post("/api/v1/internal/notify_shares_changed")
-async def notify_shares_changed(request: Request):
+async def _notify_shares_changed(device_name: str = "external_client"):
+    """通用的共享变更通知函数"""
     try:
         event_data = {
             "event": "shares_updated",
-            "device_name": request.app.state.controller.device_name,
+            "device_name": device_name,
         }
         await manager.broadcast(json.dumps(event_data))
         return {"status": "ok"}
@@ -184,15 +166,17 @@ async def notify_shares_changed(request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/v1/internal/notify_shares_changed")
+async def notify_shares_changed_internal(request: Request):
+    """内部API端点，用于服务器内部通知共享变更"""
+    device_name = request.app.state.controller.device_name
+    return await _notify_shares_changed(device_name)
+
+
 @app.post("/api/v1/notify_shares_changed")
 async def notify_shares_changed_external():
     """外部API端点，用于客户端通知共享变更"""
-    try:
-        event_data = {"event": "shares_updated", "device_name": "external_client"}
-        await manager.broadcast(json.dumps(event_data))
-        return {"status": "ok"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return await _notify_shares_changed("external_client")
 
 
 @app.post("/api/v1/notify_file_changed")
@@ -247,7 +231,7 @@ def get_peers():
 
 @app.get("/api/v1/shares")
 def list_shares():
-    shares = load_config(force_reload=True).get("shares", [])
+    shares = load_config().get("shares", [])
     return JSONResponse(
         content=[
             {"name": s.get("name"), "permissions": s.get("permissions", [])}

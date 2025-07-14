@@ -17,11 +17,12 @@ class ShareModel:
 
     def _load_shares(self) -> None:
         """从配置文件加载共享文件夹"""
-        self._shares = load_config(force_reload=True).get("shares", [])
+        self._shares = load_config().get("shares", [])
 
     def reload_shares(self) -> None:
         """重新加载共享文件夹并通知回调"""
-        self._load_shares()
+        # 只有在需要强制重载时才使用force_reload=True
+        self._shares = load_config(force_reload=True).get("shares", [])
         self._notify_shares_changed()
 
     def get_shares(self) -> List[Dict[str, Any]]:

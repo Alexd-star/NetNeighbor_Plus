@@ -34,6 +34,12 @@ class DeviceModel:
         self._on_device_list_changed_callbacks: List[Callable[[], None]] = []
         self.my_service_name = None  # 用于存储本机服务名称
 
+        # 批量更新机制
+        self._batch_update_enabled = False
+        self._pending_notifications = set()
+
+        # 移除性能监控和限制，专注于速度
+
     def set_my_service_name(self, service_name: str):
         """设置本机服务名称"""
         self.my_service_name = service_name
@@ -52,12 +58,17 @@ class DeviceModel:
 
         self.online_devices[service_name] = device_data
 
-        # 通知回调
-        for callback in self._on_device_added_callbacks:
-            callback(service_name, device_data)
+        # 批量更新模式下延迟通知
+        if self._batch_update_enabled:
+            self._pending_notifications.add("device_added")
+            self._pending_notifications.add("list_changed")
+        else:
+            # 立即通知回调
+            for callback in self._on_device_added_callbacks:
+                callback(service_name, device_data)
 
-        for callback in self._on_device_list_changed_callbacks:
-            callback()
+            for callback in self._on_device_list_changed_callbacks:
+                callback()
 
         return True
 
@@ -68,12 +79,17 @@ class DeviceModel:
 
         del self.online_devices[service_name]
 
-        # 通知回调
-        for callback in self._on_device_removed_callbacks:
-            callback(service_name)
+        # 批量更新模式下延迟通知
+        if self._batch_update_enabled:
+            self._pending_notifications.add("device_removed")
+            self._pending_notifications.add("list_changed")
+        else:
+            # 立即通知回调
+            for callback in self._on_device_removed_callbacks:
+                callback(service_name)
 
-        for callback in self._on_device_list_changed_callbacks:
-            callback()
+            for callback in self._on_device_list_changed_callbacks:
+                callback()
 
         return True
 
@@ -123,3 +139,22 @@ class DeviceModel:
     def on_device_list_changed(self, callback: Callable[[], None]) -> None:
         """注册设备列表变化回调"""
         self._on_device_list_changed_callbacks.append(callback)
+
+    def enable_batch_updates(self):
+        """启用批量更新模式"""
+        self._batch_update_enabled = True
+        self._pending_notifications.clear()
+
+    def disable_batch_updates(self):
+        """禁用批量更新模式并处理待处理的通知"""
+        self._batch_update_enabled = False
+
+        # 处理待处理的通知
+        # 注意：在批量模式下，我们只触发list_changed回调，让Presenter决定如何更新
+        if "list_changed" in self._pending_notifications:
+            for callback in self._on_device_list_changed_callbacks:
+                callback()
+
+        self._pending_notifications.clear()
+
+

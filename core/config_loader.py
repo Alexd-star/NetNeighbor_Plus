@@ -2,6 +2,7 @@ import os
 import platform
 import socket
 import threading
+import time
 from typing import Optional, Dict, Any
 
 import toml
@@ -9,10 +10,16 @@ import toml
 
 _config: Optional[Dict[str, Any]] = None
 _config_lock = threading.Lock()
+_config_file_mtime: Optional[float] = None
+_config_dir_cache: Optional[str] = None
 
 
 def get_config_dir() -> str:
-    """获取用户专属的配置文件夹路径，确保文件夹存在。"""
+    """获取用户专属的配置文件夹路径，确保文件夹存在。使用缓存避免重复计算。"""
+    global _config_dir_cache
+    if _config_dir_cache is not None:
+        return _config_dir_cache
+
     system = platform.system()
     if system == "Windows":
         path = os.path.join(os.environ["APPDATA"], "NetNeighbor_Plus")
@@ -20,6 +27,7 @@ def get_config_dir() -> str:
         path = os.path.join(os.path.expanduser("~"), ".config", "NetNeighbor_Plus")
 
     os.makedirs(path, exist_ok=True)
+    _config_dir_cache = path
     return path
 
 
@@ -40,14 +48,30 @@ def create_default_config() -> Dict[str, Any]:
     }
 
 
+def _check_config_file_changed() -> bool:
+    """检查配置文件是否已被修改"""
+    global _config_file_mtime
+    try:
+        current_mtime = os.path.getmtime(CONFIG_PATH)
+        if _config_file_mtime is None or current_mtime != _config_file_mtime:
+            _config_file_mtime = current_mtime
+            return True
+        return False
+    except OSError:
+        # 文件不存在或无法访问
+        return True
+
+
 def load_config(force_reload: bool = False) -> Dict[str, Any]:
     """
     加载并返回TOML配置文件内容。
     如果配置文件不存在，则自动创建一份新的。
+    使用文件修改时间检测避免不必要的重新加载。
     """
     global _config
     with _config_lock:
-        if _config is None or force_reload:
+        # 只有在强制重载或配置未加载或文件已修改时才重新加载
+        if _config is None or force_reload or _check_config_file_changed():
             try:
                 with open(CONFIG_PATH, "r", encoding="utf-8") as f:
                     _config = toml.load(f)
@@ -58,6 +82,8 @@ def load_config(force_reload: bool = False) -> Dict[str, Any]:
                     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
                         toml.dump(_config, f)
                     print(f"新的配置文件已成功创建于: {CONFIG_PATH}")
+                    # 更新文件修改时间
+                    _check_config_file_changed()
                 except Exception as e:
                     print(f"错误：无法写入新的配置文件 - {e}")
             except Exception as e:
@@ -75,3 +101,11 @@ def get_config() -> Dict[str, Any]:
 def get_shares() -> list:
     """安全地获取共享列表。"""
     return get_config().get("shares", [])
+
+
+def invalidate_config_cache():
+    """使配置缓存失效，强制下次访问时重新加载"""
+    global _config, _config_file_mtime
+    with _config_lock:
+        _config = None
+        _config_file_mtime = None

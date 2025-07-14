@@ -5,8 +5,9 @@ import argparse
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication, QMessageBox
 
-from gui.app_controller import AppController
-from gui.main_window_mvc import MainWindowMVC
+# 延迟导入非关键模块，加快启动速度
+# from gui.app_controller import AppController
+# from gui.main_window_mvc import MainWindowMVC
 
 
 def show_exception_box(exception_type, exception_value, exception_traceback):
@@ -51,16 +52,13 @@ if __name__ == "__main__":
 
         app = QApplication(sys.argv)
 
+        # 懒导入关键模块，减少启动时间
+        from gui.app_controller import AppController
+        from gui.main_window_mvc import MainWindowMVC
+
         controller = AppController(port_override=port_override)
 
         window = MainWindowMVC(controller)
-
-        def load_style_sheet():
-            try:
-                with open("gui/style.qss", "r", encoding="utf-8") as f:
-                    app.setStyleSheet(f.read())
-            except FileNotFoundError:
-                print("警告：未找到 gui/style.qss 样式文件，将使用默认样式。")
 
         def delayed_startup():
             try:
@@ -72,9 +70,10 @@ if __name__ == "__main__":
 
         window.show()
 
-        load_style_sheet()
+        # 样式表加载已移至MainWindowMVC中，避免重复加载
 
-        QTimer.singleShot(100, delayed_startup)
+        # 减少启动延迟，加快应用响应
+        QTimer.singleShot(50, delayed_startup)
 
         exit_code = app.exec()
 

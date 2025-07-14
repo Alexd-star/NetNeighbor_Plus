@@ -208,6 +208,10 @@ class FileBrowserView(QWidget):
         upload_menu.addAction(upload_folder_action)
         self.upload_button.setMenu(upload_menu)
 
+        # 存储上传菜单动作以便后续设置图标
+        self.upload_files_action = upload_files_action
+        self.upload_folder_action = upload_folder_action
+
     def _on_context_menu_requested(self, pos):
         """处理右键菜单请求"""
         global_pos = self.file_table_widget.mapToGlobal(pos)
@@ -231,6 +235,8 @@ class FileBrowserView(QWidget):
         download_icon: QIcon,
         folder_icon: QIcon,
         file_icon: QIcon,
+        upload_file_icon: QIcon = None,
+        upload_folder_icon: QIcon = None,
     ):
         """设置图标"""
         self.back_icon = back_icon
@@ -248,6 +254,12 @@ class FileBrowserView(QWidget):
         self.back_button.setText("返回")
         self.upload_button.setText("上传")
         self.download_button.setText("下载")
+
+        # 设置上传菜单项图标
+        if upload_file_icon and hasattr(self, 'upload_files_action'):
+            self.upload_files_action.setIcon(upload_file_icon)
+        if upload_folder_icon and hasattr(self, 'upload_folder_action'):
+            self.upload_folder_action.setIcon(upload_folder_icon)
 
     def set_shares(self, shares: List[str]):
         """设置共享列表"""

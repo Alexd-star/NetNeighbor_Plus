@@ -6,6 +6,7 @@ import time
 from typing import Tuple
 
 from .config_loader import load_config
+from .path_utils import get_safe_path_and_share
 
 
 def log_server(message, is_error=False):
@@ -17,23 +18,7 @@ def log_server(message, is_error=False):
 
 def get_safe_path_for_tcp(share_name: str, sub_path: str = "/") -> Tuple[str, dict]:
     """安全地解析共享路径，防止路径遍历攻击。"""
-    all_shares = load_config(force_reload=True).get("shares", [])
-    target_share = next((s for s in all_shares if s["name"] == share_name), None)
-    if not target_share:
-        raise FileNotFoundError(f"Share '{share_name}' not found")
-
-    # 检查下载权限
-    if "download" not in target_share.get("permissions", ["read"]):
-        raise PermissionError(f"Download permission denied for share '{share_name}'")
-
-    base_path = os.path.abspath(target_share["path"])
-    safe_sub_path = os.path.normpath(sub_path.lstrip("/\\"))
-    full_path = os.path.join(base_path, safe_sub_path)
-
-    if not os.path.abspath(full_path).startswith(base_path):
-        raise PermissionError("Access denied: Path traversal attempt detected.")
-
-    return full_path, target_share
+    return get_safe_path_and_share(share_name, sub_path, require_permission="download")
 
 
 async def _drain_stream(

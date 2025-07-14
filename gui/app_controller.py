@@ -12,9 +12,10 @@ import uvicorn
 from PySide6.QtCore import QObject, Signal, QTimer
 
 from core.config_loader import get_config, get_shares
-from core.discovery import DiscoveryService
 from core.event_bus import bus
-from core.file_watcher import start_file_watcher
+# 延迟导入非关键模块
+# from core.discovery import DiscoveryService
+# from core.file_watcher import start_file_watcher
 from core.web_api import app as fastapi_app, manager as websocket_manager
 
 
@@ -65,13 +66,49 @@ class AppController(QObject):
 
         bus.subscribe("peer_update", self._handle_peer_update_event)
 
+        # WebSocket广播防抖机制
+        self._last_broadcast_time = 0
+        self._pending_broadcasts = {}
+        self._broadcast_timer = None
+
     def _handle_peer_update_event(self, event_data: dict):
         """当从事件总线接收到设备更新事件时，通过WebSocket广播出去。"""
-        loop = getattr(fastapi_app.state, "asyncio_loop", None)
-        if loop and loop.is_running():
-            loop.call_soon_threadsafe(
-                asyncio.create_task, websocket_manager.broadcast(json.dumps(event_data))
-            )
+        # 使用防抖机制减少WebSocket广播频率
+        device_name = event_data.get("name")
+        if device_name:
+            self._pending_broadcasts[device_name] = event_data
+
+            # 减少广播延迟，提高响应速度
+            current_time = time.time()
+            if current_time - self._last_broadcast_time > 0.005:  # 5ms防抖
+                self._schedule_broadcast()
+                self._last_broadcast_time = current_time
+
+    def _schedule_broadcast(self):
+        """调度WebSocket广播"""
+        if self._broadcast_timer:
+            return  # 已有定时器在运行
+
+        def do_broadcast():
+            if not self._pending_broadcasts:
+                return
+
+            # 批量广播所有待处理的事件
+            broadcasts_to_send = list(self._pending_broadcasts.values())
+            self._pending_broadcasts.clear()
+            self._broadcast_timer = None
+
+            loop = getattr(fastapi_app.state, "asyncio_loop", None)
+            if loop and loop.is_running():
+                for event_data in broadcasts_to_send:
+                    loop.call_soon_threadsafe(
+                        asyncio.create_task,
+                        websocket_manager.broadcast(json.dumps(event_data))
+                    )
+
+        # 使用线程定时器而不是QTimer，避免依赖Qt
+        self._broadcast_timer = threading.Timer(0.005, do_broadcast)  # 5ms延迟
+        self._broadcast_timer.start()
 
     def _get_dynamic_device_type(self) -> str:
         """根据操作系统动态判断设备类型。"""
@@ -87,38 +124,60 @@ class AppController(QObject):
         """启动所有后台服务。"""
         if self.is_running:
             return
-        try:
-            host_ip = socket.gethostbyname(socket.gethostname())
-        except socket.gaierror:
-            host_ip = "127.0.0.1"
 
         print("正在启动所有后台服务...")
 
-        base_name = self.running_config.get("service", {}).get("name", "auto").strip()
-        dynamic_base_name = (
-            socket.gethostname()
-            if not base_name or base_name.lower() == "auto"
-            else base_name
-        )
+        # 并行获取网络信息和设备信息，避免阻塞
+        def get_host_info():
+            try:
+                return socket.gethostbyname(socket.gethostname())
+            except socket.gaierror:
+                return "127.0.0.1"
 
-        self.device_name = (
-            f"{dynamic_base_name}-{self.port}"
-            if self.port_override
-            else dynamic_base_name
-        )
+        def get_device_info():
+            base_name = self.running_config.get("service", {}).get("name", "auto").strip()
+            dynamic_base_name = (
+                socket.gethostname()
+                if not base_name or base_name.lower() == "auto"
+                else base_name
+            )
+
+            device_name = (
+                f"{dynamic_base_name}-{self.port}"
+                if self.port_override
+                else dynamic_base_name
+            )
+
+            device_properties = {
+                "os": f"{platform.system()} {platform.release()}",
+                "user": getpass.getuser(),
+                "tcp_port": str(self.tcp_port),
+                "dev_type": self._get_dynamic_device_type(),
+            }
+
+            return device_name, device_properties
+
+        # 并行执行网络和设备信息获取
+        host_thread = threading.Thread(target=lambda: setattr(self, '_host_ip', get_host_info()))
+        device_thread = threading.Thread(target=lambda: setattr(self, '_device_info', get_device_info()))
+
+        host_thread.start()
+        device_thread.start()
+
+        # 等待信息获取完成
+        host_thread.join()
+        device_thread.join()
+
+        # 设置设备信息
+        self.device_name, self.device_properties = self._device_info
         self.service_name = self.device_name
-
-        self.device_properties = {
-            "os": f"{platform.system()} {platform.release()}",
-            "user": getpass.getuser(),
-            "tcp_port": str(self.tcp_port),
-            "dev_type": self._get_dynamic_device_type(),
-        }
         self.device_info_updated.emit()
 
+        # 配置FastAPI应用状态
         fastapi_app.state.controller = self
         fastapi_app.state.tcp_port = self.tcp_port
 
+        # 启动Uvicorn服务器
         uvicorn_config = uvicorn.Config(
             fastapi_app,
             host="0.0.0.0",
@@ -129,28 +188,40 @@ class AppController(QObject):
         self.uvicorn_server_thread = UvicornServer(uvicorn_config)
         self.uvicorn_server_thread.start()
 
+        # 启动等待线程
         waiter_thread = threading.Thread(
             target=self._wait_and_signal_startup, daemon=True
         )
         waiter_thread.start()
 
-        QTimer.singleShot(500, self._start_delayed_services)
+        # 更短的延迟启动非关键服务
+        QTimer.singleShot(200, self._start_delayed_services)
 
         self.is_running = True
 
     def _start_delayed_services(self):
         """延迟启动非关键服务，避免阻塞UI"""
-        try:
-            host_ip = socket.gethostbyname(socket.gethostname())
-        except socket.gaierror:
-            host_ip = "127.0.0.1"
+        # 使用已获取的主机IP，避免重复网络调用
+        host_ip = getattr(self, '_host_ip', '127.0.0.1')
 
-        self.discovery_service = DiscoveryService(
-            host_ip, self.port, self.service_name, self.device_properties
-        )
-        self.discovery_service.start()
+        # 并行启动发现服务和文件监视器
+        def start_discovery():
+            # 懒导入发现服务
+            from core.discovery import DiscoveryService
+            self.discovery_service = DiscoveryService(
+                host_ip, self.port, self.service_name, self.device_properties
+            )
+            self.discovery_service.start()
 
-        self._start_file_watcher()
+        def start_watcher():
+            self._start_file_watcher()
+
+        # 并行启动服务
+        discovery_thread = threading.Thread(target=start_discovery, daemon=True)
+        watcher_thread = threading.Thread(target=start_watcher, daemon=True)
+
+        discovery_thread.start()
+        watcher_thread.start()
 
     def _wait_and_signal_startup(self):
         """等待 Uvicorn 启动完毕后, 发射 server_started 信号。"""
@@ -198,6 +269,9 @@ class AppController(QObject):
         paths = [s["path"] for s in get_shares() if os.path.exists(s["path"])]
         if not paths:
             return
+
+        # 懒导入文件监视器
+        from core.file_watcher import start_file_watcher
 
         def on_change(delete_events=None):
             if not self.is_running or self.stop_event.is_set():

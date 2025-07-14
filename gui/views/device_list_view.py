@@ -35,6 +35,10 @@ class DeviceListView(QWidget):
         super().__init__(parent)
         self._setup_ui()
 
+        # 设备项缓存，避免重复创建
+        self._device_items = {}  # service_name -> QListWidgetItem
+        self._update_pending = False
+
     def _setup_ui(self):
         """设置UI组件"""
         layout = QVBoxLayout(self)
@@ -61,6 +65,7 @@ class DeviceListView(QWidget):
     def clear_devices(self):
         """清空设备列表"""
         self.device_list_widget.clear()
+        self._device_items.clear()
 
     def add_device(
         self,
@@ -69,7 +74,11 @@ class DeviceListView(QWidget):
         device_type: str,
         icon: Optional[QIcon] = None,
     ):
-        """添加设备到列表"""
+        """添加设备到列表 - 增量更新版本"""
+        # 如果设备已存在，先移除
+        if service_name in self._device_items:
+            self.remove_device(service_name)
+
         item = QListWidgetItem(f"{display_name}\n类型: {device_type}")
         if icon:
             item.setIcon(icon)
@@ -90,17 +99,43 @@ class DeviceListView(QWidget):
         if not inserted:
             self.device_list_widget.addItem(item)
 
+        # 缓存设备项
+        self._device_items[service_name] = item
+
     def remove_device(self, service_name: str):
-        """从列表中移除设备"""
-        for i in range(self.device_list_widget.count()):
-            item = self.device_list_widget.item(i)
-            if item and item.data(Qt.ItemDataRole.UserRole) == service_name:
-                self.device_list_widget.takeItem(i)
-                break
+        """从列表中移除设备 - 增量更新版本"""
+        if service_name in self._device_items:
+            item = self._device_items[service_name]
+            # 找到项目在列表中的位置并移除
+            for i in range(self.device_list_widget.count()):
+                if self.device_list_widget.item(i) == item:
+                    self.device_list_widget.takeItem(i)
+                    break
+            # 从缓存中移除
+            del self._device_items[service_name]
 
     def update_devices(self, devices: Dict[str, Dict[str, Any]], device_icon: QIcon):
-        """更新整个设备列表"""
-        self.device_list_widget.clear()
+        """更新整个设备列表 - 智能增量更新版本"""
+        # 获取当前设备列表
+        current_devices = set(self._device_items.keys())
+        new_devices = set(devices.keys())
+
+        # 找出需要移除的设备
+        devices_to_remove = current_devices - new_devices
+        for service_name in devices_to_remove:
+            self.remove_device(service_name)
+
+        # 找出需要添加或更新的设备
+        devices_to_add_or_update = new_devices - current_devices
+        for service_name in devices_to_add_or_update:
+            device_data = devices[service_name]
+            display_name = service_name.split("._netneighbor._tcp.local.")[0]
+            dev_type = device_data.get("properties", {}).get("dev_type", "未知")
+            self.add_device(service_name, display_name, dev_type, device_icon)
+
+    def update_devices_full(self, devices: Dict[str, Dict[str, Any]], device_icon: QIcon):
+        """完全重建设备列表 - 仅在必要时使用"""
+        self.clear_devices()
 
         # 使用自然排序对设备进行排序
         sorted_devices = sorted(
