@@ -1,3 +1,7 @@
+"""
+TCP服务器，提供高速文件传输服务
+"""
+
 import asyncio
 import json
 import os

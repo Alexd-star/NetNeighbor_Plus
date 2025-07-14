@@ -7,11 +7,7 @@ from typing import Dict, Any, Optional, List, Callable
 
 
 def natural_sort_key(s: str) -> list:
-    """
-    为字符串生成一个可用于自然排序的键。
-    例如，'v10' 会被转换为 ['v', 10]，'v2' 会被转换为 ['v', 2]。
-    这样在比较时，10 会被正确地识别为大于 2。
-    """
+    """为字符串生成一个可用于自然排序的键"""
     result = []
     parts = re.split(r"(\d+)", s)
     for part in parts:
@@ -156,5 +152,3 @@ class DeviceModel:
                 callback()
 
         self._pending_notifications.clear()
-
-

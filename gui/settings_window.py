@@ -1,3 +1,7 @@
+"""
+设置窗口，用于配置应用程序参数和共享文件夹
+"""
+
 import copy
 import os
 import toml

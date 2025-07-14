@@ -1,3 +1,7 @@
+"""
+视图模块，包含所有用户界面视图组件
+"""
+
 from .device_list_view import DeviceListView
 from .share_list_view import ShareListView
 from .log_view import LogView

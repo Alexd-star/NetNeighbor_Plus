@@ -1,4 +1,7 @@
-# 文件: core/tar_worker.py
+"""
+TAR打包工作进程，用于文件夹的压缩和传输
+"""
+
 import os
 import sys
 import tarfile

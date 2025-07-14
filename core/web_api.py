@@ -1,3 +1,7 @@
+"""
+Web API服务，提供HTTP接口用于文件共享和设备通信
+"""
+
 import asyncio
 import json
 import os
@@ -353,8 +357,11 @@ async def delete_file(share_name: str, file_path: str):
                 detail="Permission denied: Delete operation not allowed",
             )
 
+        # 检查是否是文件夹（在删除前检查）
+        is_directory = os.path.isdir(full_path)
+
         # 执行删除操作
-        if os.path.isdir(full_path):
+        if is_directory:
             # 删除文件夹及其内容
             shutil.rmtree(full_path)
         else:
@@ -366,11 +373,12 @@ async def delete_file(share_name: str, file_path: str):
             "event": "refresh_files",
             "share_name": share_name,
             "path": os.path.dirname(file_path),
+            "source": "api",  # 标记为API操作，避免重复日志
             "deleted_files": [
                 {
                     "share_name": share_name,
                     "path": file_path,
-                    "is_directory": os.path.isdir(full_path),
+                    "is_directory": is_directory,
                 }
             ],
         }
@@ -410,11 +418,20 @@ async def rename_file(share_name: str, file_path: str, new_name: str):
         # 执行重命名操作
         os.rename(full_path, new_full_path)
 
-        # 触发文件变更事件
+        # 触发文件变更事件，包含重命名信息
         event_data = {
             "event": "refresh_files",
             "share_name": share_name,
             "path": os.path.dirname(file_path),
+            "source": "api",  # 标记为API操作，避免重复日志
+            "renamed_files": [
+                {
+                    "share_name": share_name,
+                    "old_path": file_path,
+                    "new_path": os.path.join(os.path.dirname(file_path), new_name).replace("\\", "/"),
+                    "is_directory": os.path.isdir(new_full_path),
+                }
+            ],
         }
         await manager.broadcast(json.dumps(event_data))
 

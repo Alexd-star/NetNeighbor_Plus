@@ -1,4 +1,6 @@
-# 文件: gui/api_client.py
+"""
+API客户端，用于与远程设备进行HTTP通信
+"""
 
 import io
 import json

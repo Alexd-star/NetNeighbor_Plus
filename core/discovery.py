@@ -1,3 +1,7 @@
+"""
+设备发现服务，基于Zeroconf协议实现网络设备自动发现
+"""
+
 import socket
 import time
 import threading
@@ -15,12 +19,16 @@ online_devices = {}
 _last_event_times = {}
 # 设备信息处理队列和线程池 - 增加线程数提高并发处理能力
 _device_info_queue = queue.Queue()
-_device_info_executor = ThreadPoolExecutor(max_workers=20, thread_name_prefix="DeviceInfo")
+_device_info_executor = ThreadPoolExecutor(
+    max_workers=20, thread_name_prefix="DeviceInfo"
+)
 _discovery_thread = None
 _discovery_running = False
 
 
-def _should_publish_event(event_type: str, name: str, debounce_time: float = 0.01) -> bool:
+def _should_publish_event(
+    event_type: str, name: str, debounce_time: float = 0.01
+) -> bool:
     """检查是否应该发布事件（减少防抖时间提高响应速度）"""
     current_time = time.time()
     event_key = f"{event_type}:{name}"
@@ -33,8 +41,10 @@ def _should_publish_event(event_type: str, name: str, debounce_time: float = 0.0
     return True
 
 
-def _process_device_info_async(zeroconf: Zeroconf, service_type: str, name: str):
-    """异步处理设备信息获取"""
+def _process_device_info_async(
+    zeroconf: Zeroconf, service_type: str, name: str, online_time: float = None
+):
+    """异步处理设备信息获取 - 利用操作系统事件机制优化"""
     try:
         info = zeroconf.get_service_info(service_type, name)
         if info and info.addresses and info.port is not None:
@@ -60,8 +70,7 @@ def _process_device_info_async(zeroconf: Zeroconf, service_type: str, name: str)
                 # 检查设备是否已存在且信息未变化
                 is_new_device = name not in online_devices
                 is_device_changed = (
-                    not is_new_device and
-                    online_devices[name] != device_data
+                    not is_new_device and online_devices[name] != device_data
                 )
 
                 online_devices[name] = device_data
@@ -69,12 +78,16 @@ def _process_device_info_async(zeroconf: Zeroconf, service_type: str, name: str)
                 # 移除日志输出，专注于速度
 
                 # 防抖检查 - 只发布新设备或信息变化的事件
-                if (is_new_device or is_device_changed) and _should_publish_event("peer_online", name):
+                if (is_new_device or is_device_changed) and _should_publish_event(
+                    "peer_online", name
+                ):
                     event_data = {
                         "event": "peer_online",
                         "name": name,
                         "friendly_name": friendly_name,
                         "data": device_data,
+                        "online_time": online_time or time.time(),
+                        "is_new_device": is_new_device,
                     }
                     bus.publish("peer_update", event_data)
 
@@ -95,10 +108,17 @@ def _device_info_worker():
             if task is None:  # 停止信号
                 break
 
-            zeroconf, service_type, name = task
+            # 支持新的时间戳参数
+            if len(task) == 4:
+                zeroconf, service_type, name, online_time = task
+            else:
+                zeroconf, service_type, name = task
+                online_time = time.time()
 
-            # 提交到线程池异步处理
-            future = _device_info_executor.submit(_process_device_info_async, zeroconf, service_type, name)
+            # 提交到线程池异步处理，传递时间戳
+            future = _device_info_executor.submit(
+                _process_device_info_async, zeroconf, service_type, name, online_time
+            )
 
             _device_info_queue.task_done()
 
@@ -109,34 +129,51 @@ def _device_info_worker():
 
 
 class DiscoveryListener:
-    """zeroconf的监听器，发布包含完整设备信息的事件。"""
+    """zeroconf的监听器，利用操作系统事件机制实现高效设备发现。"""
 
     def remove_service(self, zeroconf: Zeroconf, type_: str, name: str) -> None:
+        """设备下线事件处理 - 利用操作系统网络事件"""
         friendly_name = name.split("._netneighbor._tcp.local.")[0]
+
+        # 记录设备下线时间，用于统计
+        import time
+
+        offline_time = time.time()
+
         if name in online_devices:
+            # 获取设备信息用于日志
+            device_info = online_devices[name]
             del online_devices[name]
 
-        # 防抖检查
-        if _should_publish_event("peer_offline", name):
-            event_data = {
-                "event": "peer_offline",
-                "name": name,
-                "friendly_name": friendly_name,
-            }
-            bus.publish("peer_update", event_data)
+            # 防抖检查 - 避免网络抖动导致的重复事件
+            if _should_publish_event("peer_offline", name):
+                event_data = {
+                    "event": "peer_offline",
+                    "name": name,
+                    "friendly_name": friendly_name,
+                    "offline_time": offline_time,
+                    "device_info": device_info,
+                }
+                bus.publish("peer_update", event_data)
 
     def update_service(self, zeroconf: Zeroconf, type_: str, name: str) -> None:
         self.add_service(zeroconf, type_, name)
 
     def add_service(self, zeroconf: Zeroconf, type_: str, name: str) -> None:
-        """添加服务 - 使用异步处理避免阻塞"""
+        """设备上线事件处理 - 利用操作系统网络事件机制"""
         global _discovery_running
 
         if not _discovery_running:
             return
 
-        # 直接加入队列，移除队列大小检查以提高速度
-        _device_info_queue.put((zeroconf, type_, name))
+        # 记录设备上线时间，用于性能统计
+        import time
+
+        online_time = time.time()
+
+        # 利用操作系统事件机制，直接加入高优先级处理队列
+        # 移除队列大小检查以提高响应速度
+        _device_info_queue.put((zeroconf, type_, name, online_time))
 
 
 class DiscoveryService:

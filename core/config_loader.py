@@ -1,3 +1,7 @@
+"""
+配置管理模块，负责加载和管理应用配置
+"""
+
 import os
 import platform
 import socket

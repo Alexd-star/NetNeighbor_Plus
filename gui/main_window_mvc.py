@@ -1,3 +1,7 @@
+"""
+主窗口MVC架构实现，应用程序的主界面
+"""
+
 import os
 import socket
 import time
@@ -11,7 +15,7 @@ from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
-    QSplitter,  
+    QSplitter,
     QStackedWidget,
     QLabel,
     QMessageBox,
@@ -23,32 +27,25 @@ from PySide6.QtWidgets import (
 
 from core.config_loader import load_config, CONFIG_PATH
 from gui.app_controller import AppController
-# 关键模型 - 立即导入
+
+
 from gui.models.device_model import DeviceModel
 from gui.models.file_model import FileModel
 from gui.models.connection_model import ConnectionModel
 from gui.models.log_model import LogModel
 from gui.models.share_model import ShareModel, RemoteShareModel
 from gui.models.transfer_model import TransferModel
-# 关键视图 - 立即导入
+
+
 from gui.views.device_list_view import DeviceListView
 from gui.views.share_list_view import ShareListView
 from gui.views.status_view import StatusView
 from gui.views.welcome_view import WelcomeView
-# 关键Presenter - 立即导入
+
 from gui.presenters.device_presenter import DevicePresenter
 from gui.presenters.share_presenter import SharePresenter
 from gui.presenters.status_presenter import StatusPresenter
 from gui.presenters.connection_presenter import ConnectionPresenter
-
-# 非关键组件 - 延迟导入
-# from gui.presenters.file_browser_presenter import FileBrowserPresenter
-# from gui.presenters.log_presenter import LogPresenter
-# from gui.presenters.transfer_manager import TransferManager
-# from gui.settings_window import SettingsWindow
-# from gui.views.file_browser_view import FileBrowserView
-# from gui.views.log_view import LogView
-# from gui.views.transfer_list_view import TransferListView
 
 
 class MainWindowMVC(QMainWindow):
@@ -324,22 +321,22 @@ class MainWindowMVC(QMainWindow):
 
         # 批量获取所有需要的图标
         icon_mappings = {
-            'folder_icon': QStyle.StandardPixmap.SP_DirIcon,
-            'file_icon': QStyle.StandardPixmap.SP_FileIcon,
-            'back_icon': QStyle.StandardPixmap.SP_ArrowLeft,
-            'upload_icon': QStyle.StandardPixmap.SP_ArrowUp,
-            'download_icon': QStyle.StandardPixmap.SP_ArrowDown,
-            'device_icon': QStyle.StandardPixmap.SP_DriveNetIcon,
-            'refresh_icon': QStyle.StandardPixmap.SP_BrowserReload,
-            'settings_icon': QStyle.StandardPixmap.SP_FileDialogDetailedView,
-            'delete_icon': QStyle.StandardPixmap.SP_TrashIcon,
-            'rename_icon': QStyle.StandardPixmap.SP_FileDialogContentsView,
+            "folder_icon": QStyle.StandardPixmap.SP_DirIcon,
+            "file_icon": QStyle.StandardPixmap.SP_FileIcon,
+            "back_icon": QStyle.StandardPixmap.SP_ArrowLeft,
+            "upload_icon": QStyle.StandardPixmap.SP_ArrowUp,
+            "download_icon": QStyle.StandardPixmap.SP_ArrowDown,
+            "device_icon": QStyle.StandardPixmap.SP_DriveNetIcon,
+            "refresh_icon": QStyle.StandardPixmap.SP_BrowserReload,
+            "settings_icon": QStyle.StandardPixmap.SP_FileDialogDetailedView,
+            "delete_icon": QStyle.StandardPixmap.SP_TrashIcon,
+            "rename_icon": QStyle.StandardPixmap.SP_FileDialogContentsView,
             # 菜单图标
-            'exit_icon': QStyle.StandardPixmap.SP_DialogCloseButton,
-            'about_icon': QStyle.StandardPixmap.SP_MessageBoxInformation,
+            "exit_icon": QStyle.StandardPixmap.SP_DialogCloseButton,
+            "about_icon": QStyle.StandardPixmap.SP_MessageBoxInformation,
             # 上传菜单图标
-            'upload_file_icon': QStyle.StandardPixmap.SP_FileIcon,
-            'upload_folder_icon': QStyle.StandardPixmap.SP_DirIcon,
+            "upload_file_icon": QStyle.StandardPixmap.SP_FileIcon,
+            "upload_folder_icon": QStyle.StandardPixmap.SP_DirIcon,
         }
 
         # 一次性设置所有图标
@@ -351,11 +348,11 @@ class MainWindowMVC(QMainWindow):
         self.share_presenter.set_folder_icon(self.folder_icon)
 
         # 设置菜单项图标
-        if hasattr(self, 'settings_action'):
+        if hasattr(self, "settings_action"):
             self.settings_action.setIcon(self.settings_icon)
-        if hasattr(self, 'exit_action'):
+        if hasattr(self, "exit_action"):
             self.exit_action.setIcon(self.exit_icon)
-        if hasattr(self, 'about_action'):
+        if hasattr(self, "about_action"):
             self.about_action.setIcon(self.about_icon)
 
     def _setup_connections(self):
@@ -540,6 +537,41 @@ class MainWindowMVC(QMainWindow):
             # 启动批量处理定时器
             self._schedule_device_batch_processing()
         elif event == "refresh_files":
+            # 判断事件来源，避免重复日志
+            event_source = data.get("source", "")
+
+            # 处理文件删除通知
+            if "deleted_files" in data and self.log_presenter:
+                # 如果是API操作（远程操作），不显示日志，因为操作方已经显示了
+                # 如果是文件监控器检测到的变化，显示为远程操作日志
+                if event_source == "file_watcher":
+                    for deleted_file in data["deleted_files"]:
+                        file_path = deleted_file.get("path", "")
+                        file_name = os.path.basename(file_path) if file_path else "未知文件"
+                        file_type = (
+                            "文件夹" if deleted_file.get("is_directory", False) else "文件"
+                        )
+                        self.log_presenter.add_log(
+                            f"远程{file_type}已删除: {file_name}", "🗑️"
+                        )
+
+            # 处理文件重命名通知
+            if "renamed_files" in data and self.log_presenter:
+                # 如果是API操作（远程操作），不显示日志，因为操作方已经显示了
+                # 如果是文件监控器检测到的变化，显示为远程操作日志
+                if event_source == "file_watcher":
+                    for renamed_file in data["renamed_files"]:
+                        old_path = renamed_file.get("old_path", "")
+                        new_path = renamed_file.get("new_path", "")
+                        old_name = os.path.basename(old_path) if old_path else "未知文件"
+                        new_name = os.path.basename(new_path) if new_path else "未知文件"
+                        file_type = (
+                            "文件夹" if renamed_file.get("is_directory", False) else "文件"
+                        )
+                        self.log_presenter.add_log(
+                            f"远程{file_type}已重命名: {old_name} -> {new_name}", "✏️"
+                        )
+
             # 防抖处理，避免短时间内重复刷新
             if not hasattr(self, "_last_refresh_time"):
                 self._last_refresh_time = 0
@@ -666,9 +698,30 @@ class MainWindowMVC(QMainWindow):
                     if data["name"] != my_service_name:
                         # 添加设备（非本机）
                         self.device_model.add_device(data["name"], data["data"])
+
+                        # 添加设备上线日志通知
+                        device_display_name = data["name"].split(
+                            "._netneighbor._tcp.local."
+                        )[0]
+                        if self.log_presenter:
+                            self.log_presenter.add_log(
+                                f"设备上线: {device_display_name}", "🟢"
+                            )
+
                 elif event == "peer_offline":
+                    # 获取设备显示名称（在移除前）
+                    device_display_name = data["name"].split(
+                        "._netneighbor._tcp.local."
+                    )[0]
+
                     # 移除设备
                     self.device_model.remove_device(data["name"])
+
+                    # 添加设备下线日志通知
+                    if self.log_presenter:
+                        self.log_presenter.add_log(
+                            f"设备下线: {device_display_name}", "🔴"
+                        )
 
         finally:
             # 禁用批量更新模式，触发UI更新
@@ -825,11 +878,7 @@ class MainWindowMVC(QMainWindow):
                 # 刷新文件列表
                 self._refresh_files()
 
-                # 通知文件变更
-                local_client = self.connection_model.get_local_api_client()
-                if local_client:
-                    # 通知本地服务器文件已更改，它会广播给其他连接的客户端
-                    local_client.notify_file_changed(share_name, path)
+                # 不需要手动通知文件变更，因为远程服务器的重命名API会自动广播事件
             else:
                 QMessageBox.critical(
                     self, "错误", f"重命名失败: {old_name}", QMessageBox.Ok
@@ -865,11 +914,7 @@ class MainWindowMVC(QMainWindow):
         # 刷新文件列表
         self._refresh_files()
 
-        # 通知文件变更
-        local_client = self.connection_model.get_local_api_client()
-        if local_client and success_count > 0:
-            # 通知本地服务器文件已更改，它会广播给其他连接的客户端
-            local_client.notify_file_changed(share_name, path)
+        # 不需要手动通知文件变更，因为远程服务器的删除API会自动广播事件
 
         # 显示操作结果
         if error_count == 0:
@@ -899,6 +944,7 @@ class MainWindowMVC(QMainWindow):
         """打开设置窗口"""
         # 懒导入设置窗口
         from gui.settings_window import SettingsWindow
+
         dialog = SettingsWindow(self.controller, self)
         if dialog.exec():
             self.controller.running_config = load_config(force_reload=True)

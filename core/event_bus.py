@@ -1,3 +1,7 @@
+"""
+事件总线系统，提供高性能的发布/订阅模式事件处理
+"""
+
 import time
 import threading
 from typing import Callable, Dict, List, Any

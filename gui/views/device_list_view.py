@@ -133,7 +133,9 @@ class DeviceListView(QWidget):
             dev_type = device_data.get("properties", {}).get("dev_type", "未知")
             self.add_device(service_name, display_name, dev_type, device_icon)
 
-    def update_devices_full(self, devices: Dict[str, Dict[str, Any]], device_icon: QIcon):
+    def update_devices_full(
+        self, devices: Dict[str, Dict[str, Any]], device_icon: QIcon
+    ):
         """完全重建设备列表 - 仅在必要时使用"""
         self.clear_devices()
 

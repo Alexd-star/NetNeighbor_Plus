@@ -1,3 +1,7 @@
+"""
+连接管理控制器，处理设备连接和通信
+"""
+
 import json
 import threading
 from typing import Dict, Any, Optional, Callable

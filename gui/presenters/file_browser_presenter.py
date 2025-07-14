@@ -63,8 +63,13 @@ class FileBrowserPresenter:
     ):
         """设置图标"""
         self.view.set_icons(
-            back_icon, upload_icon, download_icon, folder_icon, file_icon,
-            upload_file_icon, upload_folder_icon
+            back_icon,
+            upload_icon,
+            download_icon,
+            folder_icon,
+            file_icon,
+            upload_file_icon,
+            upload_folder_icon,
         )
 
     def _on_files_changed(self):

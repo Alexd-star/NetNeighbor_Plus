@@ -1,3 +1,7 @@
+"""
+数据模型模块，包含所有数据模型类
+"""
+
 from .device_model import DeviceModel
 from .share_model import ShareModel, RemoteShareModel
 from .file_model import FileModel

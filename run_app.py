@@ -1,13 +1,13 @@
+"""
+应用程序启动入口，负责初始化和启动NetNeighbor Plus
+"""
+
 import sys
 import traceback
 import argparse
 
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication, QMessageBox
-
-# 延迟导入非关键模块，加快启动速度
-# from gui.app_controller import AppController
-# from gui.main_window_mvc import MainWindowMVC
 
 
 def show_exception_box(exception_type, exception_value, exception_traceback):

@@ -1,3 +1,7 @@
+"""
+设备发现性能测试模拟器，用于测试大量设备同时上线的场景
+"""
+
 import socket
 import threading
 import time

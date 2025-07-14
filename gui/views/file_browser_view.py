@@ -256,9 +256,9 @@ class FileBrowserView(QWidget):
         self.download_button.setText("下载")
 
         # 设置上传菜单项图标
-        if upload_file_icon and hasattr(self, 'upload_files_action'):
+        if upload_file_icon and hasattr(self, "upload_files_action"):
             self.upload_files_action.setIcon(upload_file_icon)
-        if upload_folder_icon and hasattr(self, 'upload_folder_action'):
+        if upload_folder_icon and hasattr(self, "upload_folder_action"):
             self.upload_folder_action.setIcon(upload_folder_icon)
 
     def set_shares(self, shares: List[str]):

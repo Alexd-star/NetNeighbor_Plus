@@ -17,7 +17,7 @@ from .conflict_resolver import (
     apply_conflict_action_to_tasks,
     create_file_info,
     should_skip_conflict_check,
-    is_conflict_cancelled
+    is_conflict_cancelled,
 )
 
 
@@ -45,7 +45,9 @@ class WorkerThread(QThread):
         # 使用新的冲突解决器
         self.conflict_resolver = ConflictResolver()
         self.conflict_resolver.conflict_resolution_needed.connect(
-            lambda file_info, event: self.conflict_resolution_needed.emit(file_info, event)
+            lambda file_info, event: self.conflict_resolution_needed.emit(
+                file_info, event
+            )
         )
 
     def set_conflict_resolution_result(self, result):
@@ -287,7 +289,9 @@ class WorkerThread(QThread):
 
         # 检查文件夹是否已存在并处理冲突
         if conflict_action == "ask":
-            folder_exists = check_folder_exists_safe(p_client, s_name, base_dest, folder_name)
+            folder_exists = check_folder_exists_safe(
+                p_client, s_name, base_dest, folder_name
+            )
 
             if folder_exists:
                 file_info = create_file_info(folder_name, is_folder=True)
@@ -300,7 +304,9 @@ class WorkerThread(QThread):
 
                 # 如果用户选择应用到所有冲突，更新所有后续任务
                 if conflict_result.get("apply_to_all"):
-                    apply_conflict_action_to_tasks(self.tasks, conflict_action, "upload_folder")
+                    apply_conflict_action_to_tasks(
+                        self.tasks, conflict_action, "upload_folder"
+                    )
 
         # 如果用户选择跳过，则直接返回
         if conflict_action == "skip":
@@ -458,7 +464,9 @@ class WorkerThread(QThread):
 
                 # 如果用户选择应用到所有冲突，更新所有后续任务
                 if conflict_result.get("apply_to_all"):
-                    apply_conflict_action_to_tasks(self.tasks, conflict_action, "upload_file")
+                    apply_conflict_action_to_tasks(
+                        self.tasks, conflict_action, "upload_file"
+                    )
 
                 # 如果用户选择跳过，直接返回
                 if conflict_action == "skip":

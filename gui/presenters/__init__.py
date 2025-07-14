@@ -1,3 +1,7 @@
+"""
+控制器模块，包含所有业务逻辑控制器
+"""
+
 from .device_presenter import DevicePresenter
 from .share_presenter import SharePresenter
 from .log_presenter import LogPresenter

@@ -1,3 +1,7 @@
+"""
+文件系统监控模块，监控文件变化并触发相应事件
+"""
+
 import time
 
 from watchdog.observers import Observer
@@ -13,11 +17,10 @@ class DebouncedChangeHandler(FileSystemEventHandler):
         self.last_triggered_time = 0
         self.timer = None
         self.recent_delete_events = []
+        self.recent_moved_events = []
 
     def on_any_event(self, event):
-        if event.is_directory:
-            return
-
+        # 处理删除事件
         if event.event_type == "deleted":
             self.recent_delete_events.append(
                 {
@@ -26,12 +29,47 @@ class DebouncedChangeHandler(FileSystemEventHandler):
                     "time": time.time(),
                 }
             )
+        # 处理重命名/移动事件
+        elif event.event_type == "moved":
+            self.recent_moved_events.append(
+                {
+                    "src_path": event.src_path,
+                    "dest_path": event.dest_path,
+                    "is_directory": event.is_directory,
+                    "time": time.time(),
+                }
+            )
 
         current_time = time.time()
         if current_time - self.last_triggered_time > self.debounce_interval:
             self.last_triggered_time = current_time
-            self.callback(self.recent_delete_events)
+            # 过滤删除事件，只保留顶级删除事件（文件夹删除时不包含其内部文件）
+            filtered_delete_events = self._filter_delete_events(self.recent_delete_events)
+            self.callback(filtered_delete_events, self.recent_moved_events)
             self.recent_delete_events = []
+            self.recent_moved_events = []
+
+    def _filter_delete_events(self, delete_events):
+        """过滤删除事件，只保留顶级删除事件"""
+        if not delete_events:
+            return []
+
+        # 按路径长度排序，短路径在前
+        sorted_events = sorted(delete_events, key=lambda x: len(x["path"]))
+        filtered_events = []
+
+        for event in sorted_events:
+            # 检查是否是其他已添加事件的子路径
+            is_child = False
+            for existing_event in filtered_events:
+                if event["path"].startswith(existing_event["path"] + "/") or event["path"].startswith(existing_event["path"] + "\\"):
+                    is_child = True
+                    break
+
+            if not is_child:
+                filtered_events.append(event)
+
+        return filtered_events
 
 
 def start_file_watcher(paths_to_watch: list, change_callback, stop_event):

@@ -1,3 +1,7 @@
+"""
+设备列表控制器，管理设备列表的显示和交互
+"""
+
 from typing import Dict, Any, Optional, Callable
 
 from PySide6.QtGui import QIcon
@@ -53,7 +57,9 @@ class DevicePresenter:
     def _update_view(self):
         """完整更新视图 - 仅在必要时使用"""
         if self.device_icon:
-            self.view.update_devices_full(self.model.get_all_devices(), self.device_icon)
+            self.view.update_devices_full(
+                self.model.get_all_devices(), self.device_icon
+            )
 
     def _on_device_selected(self, service_name: str):
         """处理设备选择事件"""

@@ -1,3 +1,7 @@
+"""
+应用程序主控制器，协调各个模块的工作
+"""
+
 import asyncio
 import copy
 import getpass
@@ -13,9 +17,8 @@ from PySide6.QtCore import QObject, Signal, QTimer
 
 from core.config_loader import get_config, get_shares
 from core.event_bus import bus
-# 延迟导入非关键模块
-# from core.discovery import DiscoveryService
-# from core.file_watcher import start_file_watcher
+
+
 from core.web_api import app as fastapi_app, manager as websocket_manager
 
 
@@ -103,7 +106,7 @@ class AppController(QObject):
                 for event_data in broadcasts_to_send:
                     loop.call_soon_threadsafe(
                         asyncio.create_task,
-                        websocket_manager.broadcast(json.dumps(event_data))
+                        websocket_manager.broadcast(json.dumps(event_data)),
                     )
 
         # 使用线程定时器而不是QTimer，避免依赖Qt
@@ -135,7 +138,9 @@ class AppController(QObject):
                 return "127.0.0.1"
 
         def get_device_info():
-            base_name = self.running_config.get("service", {}).get("name", "auto").strip()
+            base_name = (
+                self.running_config.get("service", {}).get("name", "auto").strip()
+            )
             dynamic_base_name = (
                 socket.gethostname()
                 if not base_name or base_name.lower() == "auto"
@@ -158,8 +163,12 @@ class AppController(QObject):
             return device_name, device_properties
 
         # 并行执行网络和设备信息获取
-        host_thread = threading.Thread(target=lambda: setattr(self, '_host_ip', get_host_info()))
-        device_thread = threading.Thread(target=lambda: setattr(self, '_device_info', get_device_info()))
+        host_thread = threading.Thread(
+            target=lambda: setattr(self, "_host_ip", get_host_info())
+        )
+        device_thread = threading.Thread(
+            target=lambda: setattr(self, "_device_info", get_device_info())
+        )
 
         host_thread.start()
         device_thread.start()
@@ -202,12 +211,13 @@ class AppController(QObject):
     def _start_delayed_services(self):
         """延迟启动非关键服务，避免阻塞UI"""
         # 使用已获取的主机IP，避免重复网络调用
-        host_ip = getattr(self, '_host_ip', '127.0.0.1')
+        host_ip = getattr(self, "_host_ip", "127.0.0.1")
 
         # 并行启动发现服务和文件监视器
         def start_discovery():
             # 懒导入发现服务
             from core.discovery import DiscoveryService
+
             self.discovery_service = DiscoveryService(
                 host_ip, self.port, self.service_name, self.device_properties
             )
@@ -273,19 +283,19 @@ class AppController(QObject):
         # 懒导入文件监视器
         from core.file_watcher import start_file_watcher
 
-        def on_change(delete_events=None):
+        def on_change(delete_events=None, moved_events=None):
             if not self.is_running or self.stop_event.is_set():
                 return
 
             # 处理文件变更通知
-            event_data = {"event": "refresh_files"}
+            event_data = {"event": "refresh_files", "source": "file_watcher"}
+
+            # 获取共享配置，用于确定文件属于哪个共享
+            shares = get_shares()
+            share_paths = {s["path"]: s["name"] for s in shares}
 
             # 如果有删除事件，添加到事件数据中
             if delete_events and len(delete_events) > 0:
-                # 获取共享配置，用于确定删除的文件属于哪个共享
-                shares = get_shares()
-                share_paths = {s["path"]: s["name"] for s in shares}
-
                 # 收集删除事件信息
                 deleted_files = []
                 for event in delete_events:
@@ -306,6 +316,32 @@ class AppController(QObject):
                 # 如果有删除文件，添加到事件数据中
                 if deleted_files:
                     event_data["deleted_files"] = deleted_files
+
+            # 如果有重命名/移动事件，添加到事件数据中
+            if moved_events and len(moved_events) > 0:
+                # 收集重命名事件信息
+                renamed_files = []
+                for event in moved_events:
+                    src_path = event["src_path"]
+                    dest_path = event["dest_path"]
+                    # 确定文件所属的共享
+                    for share_path, share_name in share_paths.items():
+                        if src_path.startswith(share_path) and dest_path.startswith(share_path):
+                            src_rel_path = os.path.relpath(src_path, share_path)
+                            dest_rel_path = os.path.relpath(dest_path, share_path)
+                            renamed_files.append(
+                                {
+                                    "share_name": share_name,
+                                    "old_path": src_rel_path.replace("\\", "/"),
+                                    "new_path": dest_rel_path.replace("\\", "/"),
+                                    "is_directory": event["is_directory"],
+                                }
+                            )
+                            break
+
+                # 如果有重命名文件，添加到事件数据中
+                if renamed_files:
+                    event_data["renamed_files"] = renamed_files
 
             try:
                 loop = getattr(fastapi_app.state, "asyncio_loop", None)
