@@ -1,7 +1,3 @@
-"""
-Presenter包初始化文件，导出所有Presenter类
-"""
-
 from .device_presenter import DevicePresenter
 from .share_presenter import SharePresenter
 from .log_presenter import LogPresenter

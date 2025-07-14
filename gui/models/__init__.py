@@ -1,7 +1,3 @@
-"""
-模型包初始化文件，导出所有模型类
-"""
-
 from .device_model import DeviceModel
 from .share_model import ShareModel, RemoteShareModel
 from .file_model import FileModel

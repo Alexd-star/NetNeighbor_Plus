@@ -1,5 +1,3 @@
-# 文件: core/tcp_server.py
-
 import asyncio
 import json
 import os

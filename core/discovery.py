@@ -1,4 +1,3 @@
-# 文件: core/discovery.py
 import socket
 from typing import cast
 

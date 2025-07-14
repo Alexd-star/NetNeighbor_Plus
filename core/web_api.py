@@ -1,6 +1,3 @@
-# 文件: core/web_api.py
-# 描述: 提供 FastAPI 应用实例，文件夹下载使用标准的 tarfile 实现。
-
 import asyncio
 import json
 import os

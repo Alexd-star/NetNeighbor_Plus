@@ -1,7 +1,3 @@
-"""
-连接Presenter类，管理设备连接和WebSocket
-"""
-
 import json
 import threading
 from typing import Dict, Any, Optional, Callable

@@ -1,4 +1,3 @@
-# 文件: core/file_watcher.py
 import time
 
 from watchdog.observers import Observer
@@ -6,27 +5,20 @@ from watchdog.events import FileSystemEventHandler
 
 
 class DebouncedChangeHandler(FileSystemEventHandler):
-    """
-    一个带有防抖功能的事件处理器。
-    在短时间内接收到多个事件时，只触发一次回调。
-    """
+    """一个带有防抖功能的事件处理器。"""
 
     def __init__(self, callback, debounce_interval=1.0):
         self.callback = callback
         self.debounce_interval = debounce_interval
         self.last_triggered_time = 0
         self.timer = None
-        # 存储最近的删除事件
         self.recent_delete_events = []
 
     def on_any_event(self, event):
-        # 忽略目录自身的修改事件，只关心内容变化
         if event.is_directory:
             return
 
-        # 检查是否是删除事件
         if event.event_type == "deleted":
-            # 记录删除事件
             self.recent_delete_events.append(
                 {
                     "path": event.src_path,
@@ -38,16 +30,12 @@ class DebouncedChangeHandler(FileSystemEventHandler):
         current_time = time.time()
         if current_time - self.last_triggered_time > self.debounce_interval:
             self.last_triggered_time = current_time
-            # 传递删除事件列表给回调函数
             self.callback(self.recent_delete_events)
-            # 清空删除事件列表
             self.recent_delete_events = []
 
 
 def start_file_watcher(paths_to_watch: list, change_callback, stop_event):
-    """
-    使用 watchdog 启动一个高效的文件系统监视器。
-    """
+    """使用 watchdog 启动一个高效的文件系统监视器。"""
     if not paths_to_watch:
         print("文件监视器：没有路径可供监视。")
         return
@@ -58,7 +46,6 @@ def start_file_watcher(paths_to_watch: list, change_callback, stop_event):
 
     for path in paths_to_watch:
         try:
-            # recursive=True 确保能监控所有子目录
             observer.schedule(event_handler, path, recursive=True)
         except Exception as e:
             print(f"错误: 无法监视路径 '{path}': {e}")

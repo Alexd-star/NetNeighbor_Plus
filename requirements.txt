@@ -1,6 +1,3 @@
-# requirements.txt (最终版)
-
-# 核心库
 zeroconf
 fastapi
 uvicorn[standard]

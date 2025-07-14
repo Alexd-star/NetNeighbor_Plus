@@ -1,7 +1,3 @@
-"""
-视图包初始化文件，导出所有视图类
-"""
-
 from .device_list_view import DeviceListView
 from .share_list_view import ShareListView
 from .log_view import LogView

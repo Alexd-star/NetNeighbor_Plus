@@ -1,4 +1,3 @@
-# 文件: gui/app_controller.py
 import asyncio
 import copy
 import getpass
@@ -64,18 +63,12 @@ class AppController(QObject):
         self.watcher_thread = None
         self.is_running = False
 
-        # 订阅 "peer_update" 事件
         bus.subscribe("peer_update", self._handle_peer_update_event)
 
     def _handle_peer_update_event(self, event_data: dict):
         """当从事件总线接收到设备更新事件时，通过WebSocket广播出去。"""
-        # 这个操作需要在一个事件循环中运行。
-        # 我们从 fastapi app state 中获取正在运行的循环。
         loop = getattr(fastapi_app.state, "asyncio_loop", None)
         if loop and loop.is_running():
-            # 使用 call_soon_threadsafe 是因为这个方法可能从任何线程被调用
-            # (例如，zeroconf的回调是在它自己的线程里)
-            # 这能安全地将任务调度到主事件循环中执行。
             loop.call_soon_threadsafe(
                 asyncio.create_task, websocket_manager.broadcast(json.dumps(event_data))
             )
@@ -123,7 +116,6 @@ class AppController(QObject):
         }
         self.device_info_updated.emit()
 
-        # 启动API服务器（关键服务）
         fastapi_app.state.controller = self
         fastapi_app.state.tcp_port = self.tcp_port
 
@@ -137,20 +129,17 @@ class AppController(QObject):
         self.uvicorn_server_thread = UvicornServer(uvicorn_config)
         self.uvicorn_server_thread.start()
 
-        # 使用一个独立的线程等待 Uvicorn 启动完毕后发射信号
         waiter_thread = threading.Thread(
             target=self._wait_and_signal_startup, daemon=True
         )
         waiter_thread.start()
 
-        # 使用QTimer延迟启动非关键服务
         QTimer.singleShot(500, self._start_delayed_services)
 
         self.is_running = True
 
     def _start_delayed_services(self):
         """延迟启动非关键服务，避免阻塞UI"""
-        # 启动设备发现服务
         try:
             host_ip = socket.gethostbyname(socket.gethostname())
         except socket.gaierror:
@@ -161,12 +150,10 @@ class AppController(QObject):
         )
         self.discovery_service.start()
 
-        # 启动文件监视器
         self._start_file_watcher()
 
     def _wait_and_signal_startup(self):
         """等待 Uvicorn 启动完毕后, 发射 server_started 信号。"""
-        # 等待 uvicorn.Server 内部的 started 标志
         while not getattr(self.uvicorn_server_thread.server, "started", False):
             if self.stop_event.is_set():
                 return

@@ -1,7 +1,3 @@
-"""
-新的MainWindow类，使用MVC架构
-"""
-
 import os
 import socket
 import time

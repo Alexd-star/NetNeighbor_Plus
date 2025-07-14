@@ -1,7 +1,3 @@
-"""
-设备列表Presenter类，连接设备模型和视图
-"""
-
 from typing import Dict, Any, Optional, Callable
 
 from PySide6.QtGui import QIcon

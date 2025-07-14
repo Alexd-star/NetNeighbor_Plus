@@ -1,12 +1,7 @@
-# 文件: gui/settings_window.py
-# 描述: 提供应用设置窗口, 用于修改设备名、端口和共享文件夹。
-# (已修正类型提示以兼容 Python 3.9)
-
 import copy
 import os
 import toml
 
-# --- 【核心修正】从 typing 模块导入 Union ---
 from typing import Union
 
 from PySide6.QtCore import Qt
