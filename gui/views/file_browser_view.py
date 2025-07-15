@@ -21,6 +21,8 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtGui import QIcon, QDragEnterEvent, QDropEvent, QAction
 
+from gui.file_type_icons import get_file_type_icon_manager
+
 
 class FileTableWidget(QTableWidget):
     """自定义表格控件，支持拖拽上传并显示视觉反馈"""
@@ -33,7 +35,6 @@ class FileTableWidget(QTableWidget):
         self.drop_overlay = None
 
     def dragEnterEvent(self, event: QDragEnterEvent):
-        """处理拖拽进入事件，无条件接受拖拽"""
         if event.mimeData().hasUrls():
             event.accept()
             self.showDropOverlay()
@@ -41,7 +42,6 @@ class FileTableWidget(QTableWidget):
             event.ignore()
 
     def dragMoveEvent(self, event):
-        """处理拖拽移动事件，始终接受拖拽"""
         if event.mimeData().hasUrls():
             event.accept()
         else:
@@ -101,6 +101,24 @@ class FileTableWidget(QTableWidget):
                 0, 0, self.viewport().width(), self.viewport().height()
             )
 
+    def mousePressEvent(self, event):
+        """重写鼠标点击事件，改善复选框点击体验"""
+        # 获取点击位置的项目
+        item = self.itemAt(event.pos())
+        if item and item.column() == 0:  # 点击的是复选框列
+            # 获取复选框项目
+            check_item = self.item(item.row(), 0)
+            if check_item:
+                # 切换复选框状态
+                current_state = check_item.checkState()
+                new_state = Qt.CheckState.Checked if current_state == Qt.CheckState.Unchecked else Qt.CheckState.Unchecked
+                check_item.setCheckState(new_state)
+                # 不调用父类的mousePressEvent，避免双重切换
+                return
+
+        # 对于其他列，调用父类的处理方法
+        super().mousePressEvent(event)
+
 
 class FileBrowserView(QWidget):
     """文件浏览器视图，显示和操作远程文件"""
@@ -131,9 +149,7 @@ class FileBrowserView(QWidget):
         # 共享选择器
         self.share_selector_combo = QComboBox()
         self.share_selector_combo.currentIndexChanged.connect(
-            lambda index: self.share_selected.emit(
-                self.share_selector_combo.currentText()
-            )
+            lambda: self.share_selected.emit(self.share_selector_combo.currentText())
         )
 
         # 返回按钮
@@ -196,6 +212,11 @@ class FileBrowserView(QWidget):
         self.file_table_widget.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.file_table_widget.files_dropped.connect(self.files_dropped)
 
+        # 设置图标大小（稍微大一点）
+        from PySide6.QtCore import QSize
+
+        self.file_table_widget.setIconSize(QSize(20, 20))
+
         layout.addWidget(self.file_table_widget)
 
         # 设置上传按钮菜单
@@ -244,6 +265,9 @@ class FileBrowserView(QWidget):
         self.download_icon = download_icon
         self.folder_icon = folder_icon
         self.file_icon = file_icon
+
+        # 初始化文件类型图标管理器
+        self.file_type_icon_manager = get_file_type_icon_manager()
 
         # 设置按钮图标
         self.back_button.setIcon(back_icon)
@@ -297,15 +321,27 @@ class FileBrowserView(QWidget):
             # 复选框
             check_item = QTableWidgetItem()
             check_item.setFlags(
-                Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled
+                Qt.ItemFlag.ItemIsUserCheckable
+                | Qt.ItemFlag.ItemIsEnabled
+                | Qt.ItemFlag.ItemIsSelectable
             )
             check_item.setCheckState(Qt.CheckState.Unchecked)
+            # 设置复选框文本为空，让整个单元格都可以点击
+            check_item.setText("")
 
             # 文件名
             name_item = QTableWidgetItem(file_info["name"])
-            name_item.setIcon(
-                self.folder_icon if file_info["is_dir"] else self.file_icon
-            )
+            # 使用文件类型图标管理器获取对应的图标
+            if hasattr(self, "file_type_icon_manager") and self.file_type_icon_manager:
+                icon = self.file_type_icon_manager.get_file_icon(
+                    file_info["name"], file_info["is_dir"]
+                )
+                name_item.setIcon(icon)
+            else:
+                # 回退到默认图标
+                name_item.setIcon(
+                    self.folder_icon if file_info["is_dir"] else self.file_icon
+                )
 
             # 类型
             type_item = QTableWidgetItem("文件夹" if file_info["is_dir"] else "文件")

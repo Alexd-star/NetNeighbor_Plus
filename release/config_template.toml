@@ -1,0 +1,11 @@
+# NetNeighbor Plus 配置文件模板
+# 首次运行时会自动创建配置文件
+
+[service]
+name = "我的设备"
+port = 8080
+
+[[shares]]
+name = "共享文件夹"
+path = "C:\Users\Public\Documents"
+permissions = ["read", "write"]

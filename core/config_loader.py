@@ -19,7 +19,6 @@ _config_dir_cache: Optional[str] = None
 
 
 def get_config_dir() -> str:
-    """获取用户专属的配置文件夹路径，确保文件夹存在。使用缓存避免重复计算。"""
     global _config_dir_cache
     if _config_dir_cache is not None:
         return _config_dir_cache
@@ -39,7 +38,6 @@ CONFIG_PATH = os.path.join(get_config_dir(), "config.toml")
 
 
 def create_default_config() -> Dict[str, Any]:
-    """创建一个全新的、安全的默认配置文件内容。"""
     print("检测到首次运行，正在创建新的默认配置文件...")
     try:
         hostname = socket.gethostname()

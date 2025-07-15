@@ -43,6 +43,20 @@ class AppController(QObject):
     server_started = Signal()
     device_info_updated = Signal()
 
+    def _write_debug_log(self, message):
+        """写入调试日志到文件"""
+        try:
+            import os
+            import datetime
+
+            log_file = os.path.join(os.path.expanduser("~"), "netneighbor_debug.log")
+            with open(log_file, "a", encoding="utf-8") as f:
+                timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                f.write(f"[{timestamp}] AppController: {message}\n")
+                f.flush()
+        except:
+            pass  # 忽略日志写入错误
+
     def __init__(self, port_override=None, parent=None):
         super().__init__(parent)
         self.running_config = copy.deepcopy(get_config())
@@ -123,19 +137,52 @@ class AppController(QObject):
         else:
             return "Unknown Device"
 
+    def _check_port_available(self, port):
+        """检查端口是否可用"""
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(("localhost", port))
+                return True
+        except OSError:
+            return False
+
+    def _find_available_port(self, start_port):
+        """找到可用的端口"""
+        for port in range(start_port, start_port + 100):
+            if self._check_port_available(port):
+                return port
+        raise RuntimeError("无法找到可用端口")
+
     def start_all_services(self):
         """启动所有后台服务。"""
         if self.is_running:
             return
 
-        print("正在启动所有后台服务...")
+        # 检查端口是否可用，如果不可用则自动选择新端口
+        if not self._check_port_available(self.port):
+            if not self.port_override:  # 只有在没有明确指定端口时才自动切换
+                original_port = self.port
+                self.port = self._find_available_port(self.port + 1)
+                self.tcp_port = self.port + 1
+                print(f"端口 {original_port} 已被占用，自动切换到端口 {self.port}")
+            else:
+                print(f"错误：指定的端口 {self.port} 已被占用")
+                return
+
+        print(f"正在启动所有后台服务... (端口: {self.port})")
 
         # 并行获取网络信息和设备信息，避免阻塞
         def get_host_info():
             try:
-                return socket.gethostbyname(socket.gethostname())
-            except socket.gaierror:
-                return "127.0.0.1"
+                # 使用ConnectionModel的方法获取局域网IP
+                from gui.models.connection_model import ConnectionModel
+
+                return ConnectionModel.get_my_ip()
+            except Exception:
+                try:
+                    return socket.gethostbyname(socket.gethostname())
+                except socket.gaierror:
+                    return "127.0.0.1"
 
         def get_device_info():
             base_name = (
@@ -210,28 +257,71 @@ class AppController(QObject):
 
     def _start_delayed_services(self):
         """延迟启动非关键服务，避免阻塞UI"""
-        # 使用已获取的主机IP，避免重复网络调用
-        host_ip = getattr(self, "_host_ip", "127.0.0.1")
+        try:
+            print("开始启动延迟服务...")
 
-        # 并行启动发现服务和文件监视器
-        def start_discovery():
-            # 懒导入发现服务
-            from core.discovery import DiscoveryService
+            # 使用已获取的主机IP，避免重复网络调用
+            host_ip = getattr(self, "_host_ip", "127.0.0.1")
+            print(f"主机IP: {host_ip}, 端口: {self.port}, 服务名: {self.service_name}")
 
-            self.discovery_service = DiscoveryService(
-                host_ip, self.port, self.service_name, self.device_properties
-            )
-            self.discovery_service.start()
+            # 并行启动发现服务和文件监视器
+            def start_discovery():
+                try:
+                    print("开始启动设备发现服务...")
+                    self._write_debug_log("=== 开始启动设备发现服务 ===")
+                    self._write_debug_log(
+                        f"参数: host_ip={host_ip}, port={self.port}, service_name={self.service_name}"
+                    )
 
-        def start_watcher():
-            self._start_file_watcher()
+                    # 懒导入发现服务
+                    from core.discovery import DiscoveryService
 
-        # 并行启动服务
-        discovery_thread = threading.Thread(target=start_discovery, daemon=True)
-        watcher_thread = threading.Thread(target=start_watcher, daemon=True)
+                    self._write_debug_log("DiscoveryService 导入成功")
 
-        discovery_thread.start()
-        watcher_thread.start()
+                    self.discovery_service = DiscoveryService(
+                        host_ip, self.port, self.service_name, self.device_properties
+                    )
+                    self._write_debug_log("DiscoveryService 实例创建成功")
+
+                    self.discovery_service.start()
+                    print("设备发现服务启动完成")
+                    self._write_debug_log("=== 设备发现服务启动完成 ===")
+                except Exception as e:
+                    error_msg = f"启动设备发现服务失败: {e}"
+                    print(error_msg)
+                    self._write_debug_log(error_msg)
+                    import traceback
+
+                    traceback_str = traceback.format_exc()
+                    print(traceback_str)
+                    self._write_debug_log(f"设备发现服务异常堆栈: {traceback_str}")
+
+            def start_watcher():
+                try:
+                    print("开始启动文件监视器...")
+                    self._start_file_watcher()
+                    print("文件监视器启动完成")
+                except Exception as e:
+                    print(f"启动文件监视器失败: {e}")
+                    import traceback
+
+                    traceback.print_exc()
+
+            # 并行启动服务
+            print("创建服务启动线程...")
+            discovery_thread = threading.Thread(target=start_discovery, daemon=True)
+            watcher_thread = threading.Thread(target=start_watcher, daemon=True)
+
+            discovery_thread.start()
+            watcher_thread.start()
+
+            print("延迟服务启动线程已创建并启动")
+
+        except Exception as e:
+            print(f"启动延迟服务时出错: {e}")
+            import traceback
+
+            traceback.print_exc()
 
     def _wait_and_signal_startup(self):
         """等待 Uvicorn 启动完毕后, 发射 server_started 信号。"""
@@ -326,7 +416,9 @@ class AppController(QObject):
                     dest_path = event["dest_path"]
                     # 确定文件所属的共享
                     for share_path, share_name in share_paths.items():
-                        if src_path.startswith(share_path) and dest_path.startswith(share_path):
+                        if src_path.startswith(share_path) and dest_path.startswith(
+                            share_path
+                        ):
                             src_rel_path = os.path.relpath(src_path, share_path)
                             dest_rel_path = os.path.relpath(dest_path, share_path)
                             renamed_files.append(

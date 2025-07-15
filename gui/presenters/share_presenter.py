@@ -19,35 +19,27 @@ class SharePresenter:
         self.model = model
         self.view = view
         self.folder_icon = None
-
-        # 连接模型和视图
         self.model.on_shares_changed(self._on_shares_changed)
         self.view.manage_shares_clicked.connect(self._on_manage_shares_clicked)
         self.view.share_context_menu_requested.connect(
             self._on_share_context_menu_requested
         )
-
-        # 回调函数
         self._on_manage_shares_callback = None
         self._on_permission_change_callback = None
         self._on_remove_share_callback = None
 
     def set_folder_icon(self, icon: QIcon):
-        """设置文件夹图标"""
         self.folder_icon = icon
         self._update_view()
 
     def _on_shares_changed(self):
-        """处理共享文件夹列表变化"""
         self._update_view()
 
     def _update_view(self):
-        """更新视图"""
         if self.folder_icon:
             self.view.update_shares(self.model.get_shares(), self.folder_icon)
 
     def _on_manage_shares_clicked(self):
-        """处理管理共享按钮点击事件"""
         if self._on_manage_shares_callback:
             self._on_manage_shares_callback()
 

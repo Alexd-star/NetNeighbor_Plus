@@ -22,19 +22,15 @@ from .conflict_resolver import (
 
 
 class WorkerThread(QThread):
-    """
-    通用工作线程, 处理所有耗时文件/文件夹传输任务。
-    """
+    """通用工作线程, 处理所有耗时文件/文件夹传输任务"""
 
-    progress = Signal(int)  # 进度值（0-100）
-    progress_text_update = Signal(str)  # 进度文本更新
-    speed_update = Signal(str)  # 速度更新
-    file_finished = Signal(str)  # 文件完成消息
-    all_finished = Signal()  # 所有任务完成信号
-    error = Signal(str)  # 错误信号
-
-    # 文件冲突解决信号
-    conflict_resolution_needed = Signal(dict, object)  # 文件信息，事件对象
+    progress = Signal(int)
+    progress_text_update = Signal(str)
+    speed_update = Signal(str)
+    file_finished = Signal(str)
+    all_finished = Signal()
+    error = Signal(str)
+    conflict_resolution_needed = Signal(dict, object)
 
     def __init__(self, tasks: List[Dict]):
         super().__init__()

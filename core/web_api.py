@@ -34,7 +34,7 @@ __all__ = ["app", "manager"]
 
 
 class ConnectionManager:
-    """管理所有活跃的 WebSocket 连接。"""
+    """管理所有活跃的 WebSocket 连接"""
 
     def __init__(self):
         self.active_connections: List[WebSocket] = []
@@ -71,9 +71,6 @@ async def startup_event():
     loop.create_task(run_tcp_server(tcp_port, tcp_stop_event))
 
 
-# 路径安全验证函数已移至 path_utils.py
-
-
 def iter_folder_as_tar(folder_path: str) -> Generator[bytes, None, None]:
     """
     一个健壮的生成器函数, 使用标准库 `tarfile` 以非阻塞方式流式生成TAR数据。
@@ -81,7 +78,6 @@ def iter_folder_as_tar(folder_path: str) -> Generator[bytes, None, None]:
     read_fd, write_fd = os.pipe()
 
     def writer_thread():
-        # 在一个独立的线程中进行写操作，防止阻塞FastAPI的事件循环
         try:
             with os.fdopen(write_fd, "wb") as writer_pipe:
                 with tarfile.open(
@@ -89,13 +85,11 @@ def iter_folder_as_tar(folder_path: str) -> Generator[bytes, None, None]:
                 ) as tar:
                     tar.add(folder_path, arcname=os.path.basename(folder_path))
         finally:
-            # 确保写端在完成后总是关闭，这会向读端发送EOF信号
             pass
 
     thread = threading.Thread(target=writer_thread)
     thread.start()
 
-    # 在主线程中从管道的读端读取数据
     try:
         with os.fdopen(read_fd, "rb") as reader_pipe:
             while True:
@@ -109,9 +103,6 @@ def iter_folder_as_tar(folder_path: str) -> Generator[bytes, None, None]:
 
 @app.get("/api/v1/download_folder/{share_name}")
 def download_folder(share_name: str, folder_path: str):
-    """
-    以TAR流式下载文件夹。
-    """
     absolute_path, target_share = get_safe_path_and_share(share_name, folder_path)
 
     if "download" not in target_share.get("permissions", []):
@@ -138,12 +129,8 @@ def download_folder(share_name: str, folder_path: str):
     )
 
 
-# --- 其余API端点保持不变 (为简洁省略) ---
-
-
 @app.get("/api/v1/ping")
 async def ping():
-    """简单的ping端点，用于测量延迟"""
     return {"status": "ok", "timestamp": time.time()}
 
 
@@ -158,7 +145,6 @@ async def websocket_endpoint(websocket: WebSocket):
 
 
 async def _notify_shares_changed(device_name: str = "external_client"):
-    """通用的共享变更通知函数"""
     try:
         event_data = {
             "event": "shares_updated",
@@ -172,22 +158,18 @@ async def _notify_shares_changed(device_name: str = "external_client"):
 
 @app.post("/api/v1/internal/notify_shares_changed")
 async def notify_shares_changed_internal(request: Request):
-    """内部API端点，用于服务器内部通知共享变更"""
     device_name = request.app.state.controller.device_name
     return await _notify_shares_changed(device_name)
 
 
 @app.post("/api/v1/notify_shares_changed")
 async def notify_shares_changed_external():
-    """外部API端点，用于客户端通知共享变更"""
     return await _notify_shares_changed("external_client")
 
 
 @app.post("/api/v1/notify_file_changed")
 async def notify_file_changed_external(request: Request):
-    """外部API端点，用于客户端通知文件变更"""
     try:
-        # 使用静态变量存储最近的事件，用于防抖
         if not hasattr(notify_file_changed_external, "last_events"):
             notify_file_changed_external.last_events = {}
 
@@ -201,20 +183,14 @@ async def notify_file_changed_external(request: Request):
                 detail="Missing required parameters: share_name or path",
             )
 
-        # 创建事件键
         event_key = f"{share_name}:{path}"
-
-        # 检查是否是重复事件（1秒内的相同事件）
         current_time = time.time()
         if event_key in notify_file_changed_external.last_events:
             last_time = notify_file_changed_external.last_events[event_key]
-            if current_time - last_time < 1.0:  # 1秒防抖
+            if current_time - last_time < 1.0:
                 return {"status": "debounced"}
 
-        # 更新最后事件时间
         notify_file_changed_external.last_events[event_key] = current_time
-
-        # 清理旧事件（超过10秒的事件）
         notify_file_changed_external.last_events = {
             k: v
             for k, v in notify_file_changed_external.last_events.items()
@@ -247,7 +223,7 @@ def list_shares():
 @app.get("/api/v1/files/{share_name}")
 def list_files(share_name: str, path: str = "/"):
     req_path, share = get_safe_path_and_share(share_name, path)
-    if "read" not in share.get("permissions", []):
+    if "read" not in share.get("permissions", ["read"]):  # 默认添加read权限
         raise HTTPException(status_code=403, detail="Read permission denied.")
     if not os.path.isdir(req_path):
         raise HTTPException(status_code=404, detail="Directory not found")
@@ -291,26 +267,30 @@ async def upload_file(
     up_dir, share = get_safe_path_and_share(share_name, dest_path)
     if "upload" not in share.get("permissions", []):
         raise HTTPException(status_code=403, detail="Upload permission denied.")
-    dest = os.path.join(up_dir, file.filename)
+
+    file_name = file.filename
+    if not file_name:
+        raise HTTPException(status_code=400, detail="Filename cannot be empty.")
+
+    dest = os.path.join(up_dir, file_name)
     if not os.path.abspath(dest).startswith(os.path.abspath(up_dir)):
         raise HTTPException(status_code=403, detail="Invalid destination filename.")
 
-    # 检查文件是否已存在
     if os.path.exists(dest):
         if conflict_action == "check":
-            # 仅检查文件是否存在，返回冲突状态
-            return {"exists": True, "filename": file.filename}
+            return {"exists": True, "filename": file_name}
         elif conflict_action == "skip":
-            # 跳过上传
             return {"message": "File skipped.", "action": "skipped"}
         elif conflict_action == "rename":
-            # 自动重命名文件
-            base_name, ext = os.path.splitext(file.filename)
+            base_name, ext = os.path.splitext(file_name)
             counter = 1
+            new_filename = file_name  # 初始化为原文件名
             while os.path.exists(dest):
                 new_filename = f"{base_name}_{counter}{ext}"
                 dest = os.path.join(up_dir, new_filename)
                 counter += 1
+            # 更新file_name为重命名后的文件名
+            file_name = new_filename
 
     try:
         with open(dest, "wb") as buffer:
@@ -319,25 +299,35 @@ async def upload_file(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-    # 返回上传结果，包括实际使用的文件名
     return {
         "message": "File uploaded.",
         "filename": os.path.basename(dest),
         "action": (
             "renamed"
-            if conflict_action == "rename" and os.path.basename(dest) != file.filename
+            if conflict_action == "rename" and os.path.basename(dest) != file_name
             else "overwrite"
         ),
     }
 
 
+# 新建文件夹的API端点
 @app.post("/api/v1/create_dir/{share_name}")
-async def create_directory(share_name: str, path: str):
+async def create_directory(share_name: str, path: str, dir_name: str):
     dir_path, share = get_safe_path_and_share(share_name, path)
     if "upload" not in share.get("permissions", []):
         raise HTTPException(status_code=403, detail="Upload permission denied.")
+
+    new_dir_path = os.path.join(dir_path, dir_name)
+    if not os.path.abspath(new_dir_path).startswith(os.path.abspath(dir_path)):
+        raise HTTPException(status_code=403, detail="Invalid directory name.")
+
+    if os.path.exists(new_dir_path):
+        raise HTTPException(
+            status_code=409, detail=f"Directory '{dir_name}' already exists."
+        )
+
     try:
-        os.makedirs(dir_path, exist_ok=True)
+        os.makedirs(new_dir_path, exist_ok=True)
         return {"message": "Directory created."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -345,35 +335,27 @@ async def create_directory(share_name: str, path: str):
 
 @app.delete("/api/v1/delete/{share_name}")
 async def delete_file(share_name: str, file_path: str):
-    """删除文件或文件夹的API端点"""
     try:
-        # 验证路径安全性
         full_path, target_share = get_safe_path_and_share(share_name, file_path)
 
-        # 检查权限
         if "delete" not in target_share.get("permissions", []):
             raise HTTPException(
                 status_code=403,
                 detail="Permission denied: Delete operation not allowed",
             )
 
-        # 检查是否是文件夹（在删除前检查）
         is_directory = os.path.isdir(full_path)
 
-        # 执行删除操作
         if is_directory:
-            # 删除文件夹及其内容
             shutil.rmtree(full_path)
         else:
-            # 删除单个文件
             os.remove(full_path)
 
-        # 触发文件变更事件
         event_data = {
             "event": "refresh_files",
             "share_name": share_name,
             "path": os.path.dirname(file_path),
-            "source": "api",  # 标记为API操作，避免重复日志
+            "source": "api",
             "deleted_files": [
                 {
                     "share_name": share_name,
@@ -393,42 +375,37 @@ async def delete_file(share_name: str, file_path: str):
 
 @app.post("/api/v1/rename/{share_name}")
 async def rename_file(share_name: str, file_path: str, new_name: str):
-    """重命名文件或文件夹的API端点"""
     try:
-        # 验证路径安全性
         full_path, target_share = get_safe_path_and_share(share_name, file_path)
 
-        # 检查权限
         if "rename" not in target_share.get("permissions", []):
             raise HTTPException(
                 status_code=403,
                 detail="Permission denied: Rename operation not allowed",
             )
 
-        # 获取目录和文件名
         dir_path = os.path.dirname(full_path)
         new_full_path = os.path.join(dir_path, new_name)
 
-        # 检查新名称是否已存在
         if os.path.exists(new_full_path):
             raise HTTPException(
                 status_code=409, detail="A file or folder with this name already exists"
             )
 
-        # 执行重命名操作
         os.rename(full_path, new_full_path)
 
-        # 触发文件变更事件，包含重命名信息
         event_data = {
             "event": "refresh_files",
             "share_name": share_name,
             "path": os.path.dirname(file_path),
-            "source": "api",  # 标记为API操作，避免重复日志
+            "source": "api",
             "renamed_files": [
                 {
                     "share_name": share_name,
                     "old_path": file_path,
-                    "new_path": os.path.join(os.path.dirname(file_path), new_name).replace("\\", "/"),
+                    "new_path": os.path.join(
+                        os.path.dirname(file_path), new_name
+                    ).replace("\\", "/"),
                     "is_directory": os.path.isdir(new_full_path),
                 }
             ],
@@ -449,98 +426,80 @@ async def upload_folder_tar(
     conflict_action: str = "overwrite",
     file: UploadFile = File(...),
 ):
-    """
-    处理tar格式的文件夹上传请求。
-    接收一个tar文件流，解压到目标路径，并处理文件冲突。
-    """
     up_dir, share = get_safe_path_and_share(share_name, dest_path)
     if "upload" not in share.get("permissions", []):
         raise HTTPException(status_code=403, detail="Upload permission denied.")
 
-    # 创建临时文件保存上传的tar数据
     temp_tar = tempfile.NamedTemporaryFile(delete=False, suffix=".tar")
     temp_tar_path = temp_tar.name
     temp_tar.close()
 
     try:
-        # 将上传的tar文件保存到临时文件
         with open(temp_tar_path, "wb") as buffer:
             while content := await file.read(1024 * 1024):
                 buffer.write(content)
 
-        # 创建临时目录用于解压tar文件
         temp_dir = tempfile.mkdtemp()
 
-        # 解压tar文件到临时目录
         with tarfile.open(temp_tar_path) as tar:
             tar.extractall(path=temp_dir)
 
-        # 获取tar文件中的顶级目录/文件
         extracted_items = os.listdir(temp_dir)
         if not extracted_items:
             return {"message": "Empty tar file uploaded.", "action": "completed"}
 
-        # 假设tar文件只包含一个顶级目录（文件夹上传的情况）
-        folder_name = extracted_items[0]
-        source_path = os.path.join(temp_dir, folder_name)
-        target_path = os.path.join(up_dir, folder_name)
+        source_folder_name = extracted_items[0]
+        source_path = os.path.join(temp_dir, source_folder_name)
+        target_path = os.path.join(up_dir, source_folder_name)
+        final_folder_name = source_folder_name
 
-        # 处理冲突
+        # 重构冲突处理逻辑
+        action_taken = conflict_action
+
         if os.path.exists(target_path):
             if conflict_action == "skip":
                 return {"message": "Folder skipped.", "action": "skipped"}
-            elif conflict_action == "rename":
-                # 自动重命名文件夹
-                counter = 1
-                base_name = folder_name
-                while os.path.exists(target_path):
-                    new_folder_name = f"{base_name}_{counter}"
-                    target_path = os.path.join(up_dir, new_folder_name)
-                    counter += 1
-                folder_name = os.path.basename(target_path)
-            elif conflict_action == "merge":
-                # 合并模式，保持target_path不变，后续会逐个文件复制
-                pass
-            # overwrite模式下，会删除已存在的目标文件夹
-            elif conflict_action == "overwrite" and os.path.exists(target_path):
-                shutil.rmtree(target_path)
 
-        # 复制解压后的文件到目标位置
-        if os.path.isdir(source_path):
-            if conflict_action == "merge" and os.path.exists(target_path):
-                # 合并模式：递归复制文件，保留已存在的文件
+            elif conflict_action == "rename":
+                counter = 1
+                base_name = source_folder_name
+                new_target_path = target_path
+                while os.path.exists(new_target_path):
+                    new_folder_name = f"{base_name}_{counter}"
+                    new_target_path = os.path.join(up_dir, new_folder_name)
+                    counter += 1
+                final_folder_name = os.path.basename(new_target_path)
+                shutil.copytree(source_path, new_target_path)
+                action_taken = "renamed"
+
+            elif conflict_action == "merge":
                 for root, dirs, files in os.walk(source_path):
                     rel_path = os.path.relpath(root, source_path)
                     target_dir = os.path.join(target_path, rel_path)
                     os.makedirs(target_dir, exist_ok=True)
-                    for file in files:
-                        src_file = os.path.join(root, file)
-                        dst_file = os.path.join(target_dir, file)
+                    for file_item in files:
+                        src_file = os.path.join(root, file_item)
+                        dst_file = os.path.join(target_dir, file_item)
                         if not os.path.exists(dst_file):
                             shutil.copy2(src_file, dst_file)
-            else:
-                # 创建新文件夹或覆盖已有文件夹
-                if os.path.exists(target_path):
-                    shutil.rmtree(target_path)
+                action_taken = "merged"
+
+            elif conflict_action == "overwrite":
+                shutil.rmtree(target_path)
                 shutil.copytree(source_path, target_path)
+                action_taken = "overwritten"
         else:
-            # 单个文件的情况
-            shutil.copy2(source_path, target_path)
+            shutil.copytree(source_path, target_path)
+            action_taken = "created"
 
         return {
             "message": "Folder uploaded successfully.",
-            "folder_name": folder_name,
-            "action": (
-                "renamed"
-                if conflict_action == "rename" and folder_name != extracted_items[0]
-                else conflict_action
-            ),
+            "folder_name": final_folder_name,
+            "action": action_taken,
         }
-
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error uploading folder: {str(e)}")
     finally:
-        # 清理临时文件和目录
         if os.path.exists(temp_tar_path):
             os.unlink(temp_tar_path)
         if "temp_dir" in locals() and os.path.exists(temp_dir):

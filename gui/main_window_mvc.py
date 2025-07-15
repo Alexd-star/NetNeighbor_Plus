@@ -212,11 +212,32 @@ class MainWindowMVC(QMainWindow):
 
     def _load_stylesheet(self):
         """延迟加载样式表"""
+        import os
+        import sys
+
+        # 确定样式文件路径（支持打包后的应用）
+        if getattr(sys, "frozen", False):
+            # 打包后的应用
+            base_path = sys._MEIPASS
+            style_path = os.path.join(base_path, "gui", "style.qss")
+        else:
+            # 开发环境
+            style_path = "gui/style.qss"
+
         try:
-            with open("gui/style.qss", "r", encoding="utf-8") as f:
+            with open(style_path, "r", encoding="utf-8") as f:
                 self.setStyleSheet(f.read())
+            print(f"样式表加载成功: {style_path}")
         except Exception as e:
             print(f"加载样式表失败: {e}")
+            print(f"尝试的路径: {style_path}")
+            # 如果加载失败，尝试备用路径
+            try:
+                with open("style.qss", "r", encoding="utf-8") as f:
+                    self.setStyleSheet(f.read())
+                print("使用备用样式表路径成功")
+            except:
+                print("所有样式表路径都失败，使用默认样式")
 
         # 创建中央部件
         central_widget = QWidget()
@@ -372,6 +393,7 @@ class MainWindowMVC(QMainWindow):
             self.file_browser_presenter.on_download(self._on_download)
             self.file_browser_presenter.on_rename(self._on_rename)
             self.file_browser_presenter.on_delete(self._on_delete)
+            self.file_browser_presenter.on_new_folder(self._on_new_folder)
 
         # 连接事件
         self.connection_presenter.connection_successful.connect(
@@ -403,36 +425,125 @@ class MainWindowMVC(QMainWindow):
                 self._update_floating_window_position
             )
 
+    def _write_debug_log(self, message):
+        """写入调试日志到文件"""
+        try:
+            import os
+            import datetime
+
+            log_file = os.path.join(os.path.expanduser("~"), "netneighbor_debug.log")
+            with open(log_file, "a", encoding="utf-8") as f:
+                timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                f.write(f"[{timestamp}] {message}\n")
+                f.flush()
+        except:
+            pass  # 忽略日志写入错误
+
     def post_init_setup(self):
         """在后台服务启动后进行网络相关的初始化"""
-        # 确保日志组件已初始化
-        if not self.log_presenter:
-            # 如果log_presenter尚未初始化，则先添加到状态栏
-            self.status_bar_label.setText("后端服务已就绪, UI开始进行网络初始化...")
-        else:
-            self.log_presenter.add_log("后端服务已就绪, UI开始进行网络初始化...")
+        try:
+            self._write_debug_log("=== post_init_setup 开始 ===")
 
-        # 设置本地API客户端
-        base_url = f"http://{self.connection_model.get_my_ip()}:{self.controller.port}"
-        self.connection_model.set_local_api_client(base_url)
+            # 确保日志组件已初始化
+            if not self.log_presenter:
+                # 如果log_presenter尚未初始化，则先添加到状态栏
+                self.status_bar_label.setText("后端服务已就绪, UI开始进行网络初始化...")
+                print("后端服务已就绪, UI开始进行网络初始化...")
+                self._write_debug_log("log_presenter 未初始化，使用状态栏显示")
+            else:
+                self.log_presenter.add_log("后端服务已就绪, UI开始进行网络初始化...")
+                self._write_debug_log("log_presenter 已初始化，添加日志")
 
-        # 设置本机服务名称
-        my_service_name = f"{self.controller.service_name}._netneighbor._tcp.local."
-        self.device_model.set_my_service_name(my_service_name)
+            # 设置本地API客户端
+            self._write_debug_log(f"设置本地API客户端，端口: {self.controller.port}")
+            print(f"设置本地API客户端，端口: {self.controller.port}")
+            base_url = (
+                f"http://{self.connection_model.get_my_ip()}:{self.controller.port}"
+            )
+            self.connection_model.set_local_api_client(base_url)
+            print(f"本地API客户端已设置: {base_url}")
+            self._write_debug_log(f"本地API客户端已设置: {base_url}")
 
-        # 设置WebSocket连接
-        self.connection_presenter.setup_local_websocket(self.controller.port)
+            # 设置本机服务名称
+            my_service_name = f"{self.controller.service_name}._netneighbor._tcp.local."
+            self.device_model.set_my_service_name(my_service_name)
+            print(f"本机服务名称已设置: {my_service_name}")
+            self._write_debug_log(f"本机服务名称已设置: {my_service_name}")
 
-        # 获取初始设备列表
-        self._populate_initial_devices()
+            # 延迟设置WebSocket连接，避免阻塞
+            print("准备设置WebSocket连接...")
+            self._write_debug_log("准备设置WebSocket连接...")
+            QTimer.singleShot(100, lambda: self._setup_websocket_delayed())
 
-        # 更新状态栏
-        if self.device_model.get_device_count() == 0:
-            self.status_bar_label.setText("初始化完成，正在扫描局域网设备...")
+            # 获取初始设备列表
+            print("获取初始设备列表...")
+            self._write_debug_log("获取初始设备列表...")
+            self._populate_initial_devices()
 
-        # 添加日志（如果日志组件已初始化）
-        if self.log_presenter:
-            self.log_presenter.add_log("系统初始化完成", "✅")
+            # 更新状态栏
+            device_count = self.device_model.get_device_count()
+            self._write_debug_log(f"当前设备数量: {device_count}")
+            if device_count == 0:
+                self.status_bar_label.setText("初始化完成，正在扫描局域网设备...")
+                self._write_debug_log("状态栏更新为：正在扫描局域网设备...")
+
+            # 添加日志（如果日志组件已初始化）
+            if self.log_presenter:
+                self.log_presenter.add_log("系统初始化完成", "✅")
+                self._write_debug_log("添加系统初始化完成日志")
+
+            print("post_init_setup 完成")
+            self._write_debug_log("=== post_init_setup 完成 ===")
+
+        except Exception as e:
+            error_msg = f"post_init_setup 出错: {e}"
+            print(error_msg)
+            self._write_debug_log(error_msg)
+            import traceback
+
+            traceback_str = traceback.format_exc()
+            print(traceback_str)
+            self._write_debug_log(f"异常堆栈: {traceback_str}")
+
+    def _setup_websocket_delayed(self):
+        """延迟设置WebSocket连接"""
+        try:
+            self._write_debug_log(
+                f"=== 开始设置WebSocket连接，端口: {self.controller.port} ==="
+            )
+            print(f"开始设置WebSocket连接，端口: {self.controller.port}")
+
+            # 设置WebSocket连接
+            self.connection_presenter.setup_local_websocket(self.controller.port)
+
+            print("WebSocket连接设置完成")
+            self._write_debug_log("WebSocket连接设置完成")
+
+            # 设置一个超时检查，如果5秒后还没有连接成功，记录警告
+            QTimer.singleShot(5000, self._check_websocket_status)
+
+        except Exception as e:
+            error_msg = f"WebSocket连接设置失败: {e}"
+            print(error_msg)
+            self._write_debug_log(error_msg)
+            import traceback
+
+            traceback_str = traceback.format_exc()
+            print(traceback_str)
+            self._write_debug_log(f"WebSocket异常堆栈: {traceback_str}")
+
+    def _check_websocket_status(self):
+        """检查WebSocket连接状态"""
+        try:
+            # 检查是否已经收到WebSocket连接成功的日志
+            if self.log_presenter:
+                # 如果日志中没有WebSocket连接成功的消息，说明可能卡住了
+                self._write_debug_log("检查WebSocket状态：5秒超时检查")
+                # 这里可以添加更多的状态检查逻辑
+            else:
+                self._write_debug_log("检查WebSocket状态：log_presenter未初始化")
+        except Exception as e:
+            self._write_debug_log(f"检查WebSocket状态时出错: {e}")
 
     def _populate_initial_devices(self):
         """获取初始设备列表"""
@@ -547,9 +658,13 @@ class MainWindowMVC(QMainWindow):
                 if event_source == "file_watcher":
                     for deleted_file in data["deleted_files"]:
                         file_path = deleted_file.get("path", "")
-                        file_name = os.path.basename(file_path) if file_path else "未知文件"
+                        file_name = (
+                            os.path.basename(file_path) if file_path else "未知文件"
+                        )
                         file_type = (
-                            "文件夹" if deleted_file.get("is_directory", False) else "文件"
+                            "文件夹"
+                            if deleted_file.get("is_directory", False)
+                            else "文件"
                         )
                         self.log_presenter.add_log(
                             f"远程{file_type}已删除: {file_name}", "🗑️"
@@ -563,10 +678,16 @@ class MainWindowMVC(QMainWindow):
                     for renamed_file in data["renamed_files"]:
                         old_path = renamed_file.get("old_path", "")
                         new_path = renamed_file.get("new_path", "")
-                        old_name = os.path.basename(old_path) if old_path else "未知文件"
-                        new_name = os.path.basename(new_path) if new_path else "未知文件"
+                        old_name = (
+                            os.path.basename(old_path) if old_path else "未知文件"
+                        )
+                        new_name = (
+                            os.path.basename(new_path) if new_path else "未知文件"
+                        )
                         file_type = (
-                            "文件夹" if renamed_file.get("is_directory", False) else "文件"
+                            "文件夹"
+                            if renamed_file.get("is_directory", False)
+                            else "文件"
                         )
                         self.log_presenter.add_log(
                             f"远程{file_type}已重命名: {old_name} -> {new_name}", "✏️"
@@ -1148,3 +1269,24 @@ class MainWindowMVC(QMainWindow):
 
         self.log_presenter.add_log("所有服务和线程已停止。应用退出。", "👋")
         event.accept()
+
+    def _on_new_folder(self, dir_name: str, share_name: str, path: str):
+        """处理新建文件夹"""
+        client = self.connection_model.get_active_peer_client()
+        if not client:
+            return
+
+        try:
+            result = client.create_directory(share_name, path, dir_name)
+            if result:
+                if self.log_presenter:
+                    self.log_presenter.add_log(f"已在远程创建文件夹: {dir_name}", "📁")
+                # 成功后立即刷新文件列表
+                self._refresh_files()
+            else:
+                QMessageBox.critical(self, "错误", f"创建文件夹 '{dir_name}' 失败。")
+
+        except Exception as e:
+            if self.log_presenter:
+                self.log_presenter.add_log(f"创建文件夹时出错: {e}", "❌")
+            QMessageBox.critical(self, "错误", f"创建文件夹失败: {str(e)}")

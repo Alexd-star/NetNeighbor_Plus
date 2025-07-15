@@ -44,7 +44,9 @@ class DebouncedChangeHandler(FileSystemEventHandler):
         if current_time - self.last_triggered_time > self.debounce_interval:
             self.last_triggered_time = current_time
             # 过滤删除事件，只保留顶级删除事件（文件夹删除时不包含其内部文件）
-            filtered_delete_events = self._filter_delete_events(self.recent_delete_events)
+            filtered_delete_events = self._filter_delete_events(
+                self.recent_delete_events
+            )
             self.callback(filtered_delete_events, self.recent_moved_events)
             self.recent_delete_events = []
             self.recent_moved_events = []
@@ -62,7 +64,9 @@ class DebouncedChangeHandler(FileSystemEventHandler):
             # 检查是否是其他已添加事件的子路径
             is_child = False
             for existing_event in filtered_events:
-                if event["path"].startswith(existing_event["path"] + "/") or event["path"].startswith(existing_event["path"] + "\\"):
+                if event["path"].startswith(existing_event["path"] + "/") or event[
+                    "path"
+                ].startswith(existing_event["path"] + "\\"):
                     is_child = True
                     break
 

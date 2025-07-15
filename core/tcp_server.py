@@ -9,8 +9,8 @@ import sys
 import time
 from typing import Tuple
 
-from .config_loader import load_config
 from .path_utils import get_safe_path_and_share
+from gui.api_client import TarUploader
 
 
 def log_server(message, is_error=False):
@@ -20,46 +20,16 @@ def log_server(message, is_error=False):
     print(f"[{timestamp}] [TCP_SERVER] {message}", file=log_stream)
 
 
-def get_safe_path_for_tcp(share_name: str, sub_path: str = "/") -> Tuple[str, dict]:
-    """安全地解析共享路径，防止路径遍历攻击。"""
-    return get_safe_path_and_share(share_name, sub_path, require_permission="download")
-
-
-async def _drain_stream(
-    proc_stream: asyncio.StreamReader,
-    stream_name: str,
-    client_writer: asyncio.StreamWriter = None,
-):
-    """一个通用的协程，用于排干子进程的一个流（stdout 或 stderr）。"""
-    while True:
-        try:
-            chunk = await proc_stream.read(65536)
-            if not chunk:
-                break
-            if client_writer:
-                client_writer.write(chunk)
-                await client_writer.drain()
-            else:
-                # 将工作进程的错误日志以UTF-8解码后打印出来
-                log_server(
-                    f"[WORKER_STDERR] {chunk.decode('utf-8', errors='ignore').strip()}",
-                    is_error=True,
-                )
-        except asyncio.CancelledError:
-            break
-        except Exception as e:
-            log_server(f"处理管道 '{stream_name}' 时发生异常: {e}", is_error=True)
-            break
-
-
 async def handle_client_connection(
     reader: asyncio.StreamReader, writer: asyncio.StreamWriter
 ):
-    """处理TCP客户端连接。使用严格的屏障来确保数据完整性，并调用TAR打包工作进程。"""
+    """
+    处理TCP客户端连接。
+    现在直接使用 TarUploader 在线程中打包，并将数据流异步写入客户端。
+    """
     client_address = writer.get_extra_info("peername")
     log_server(f"已接受来自 {client_address} 的TCP连接")
 
-    proc = None
     try:
         header_data = await asyncio.wait_for(reader.read(1024), timeout=10.0)
         if not header_data:
@@ -71,60 +41,36 @@ async def handle_client_connection(
         if action == "download_folder":
             share_name = header.get("share_name")
             remote_path = header.get("remote_path")
-            absolute_path, _ = get_safe_path_for_tcp(share_name, remote_path)
+
+            absolute_path, _ = get_safe_path_and_share(
+                share_name, remote_path, require_permission="download"
+            )
 
             if not os.path.isdir(absolute_path):
                 raise FileNotFoundError(
-                    f"Folder '{absolute_path}' not found or is not a directory."
+                    f"文件夹 '{absolute_path}' 未找到或不是一个目录。"
                 )
 
-            # 响应客户端，表示准备就绪
             writer.write(json.dumps({"status": "ok"}).encode("utf-8"))
             await writer.drain()
 
-            # 等待客户端确认可以开始发送数据
             await asyncio.wait_for(reader.read(1024), timeout=10.0)
 
-            worker_script_path = os.path.join(
-                os.path.dirname(__file__), "tar_worker.py"
-            )
-            if not os.path.exists(worker_script_path):
-                raise FileNotFoundError(
-                    f"Worker script '{worker_script_path}' not found!"
-                )
+            log_server(f"开始为 {client_address} 流式传输文件夹: {absolute_path}")
 
-            env = os.environ.copy()
-            env["PYTHONIOENCODING"] = "utf-8"
+            streamer = TarUploader(absolute_path)
 
-            proc = await asyncio.create_subprocess_exec(
-                sys.executable,
-                worker_script_path,
-                absolute_path,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=env,
-            )
-            log_server(
-                f"已启动 TAR 打包子进程 [PID: {proc.pid}] for folder '{absolute_path}'"
-            )
+            try:
+                while True:
+                    chunk = await asyncio.to_thread(streamer.read)
+                    if not chunk:
+                        break
+                    writer.write(chunk)
+                    await writer.drain()
+            finally:
+                streamer.close()
 
-            # 并发地排干stdout和stderr管道
-            stdout_task = asyncio.create_task(
-                _drain_stream(proc.stdout, "stdout", writer)
-            )
-            stderr_task = asyncio.create_task(_drain_stream(proc.stderr, "stderr"))
-
-            # 等待子进程结束，并收集其退出码
-            return_code = await proc.wait()
-            log_server(f"子进程 [PID: {proc.pid}] 已退出，返回码: {return_code}")
-
-            # 等待管道数据完全排干
-            await stdout_task
-            await stderr_task
-            log_server("stdout 和 stderr 管道已完全排干。")
-
-            if return_code != 0:
-                raise RuntimeError(f"TAR 打包子进程 [PID: {proc.pid}] 执行失败。")
+            log_server(f"文件夹 {absolute_path} 已成功流式传输到 {client_address}")
 
     except Exception as e:
         error_msg = (
@@ -132,7 +78,6 @@ async def handle_client_connection(
         )
         log_server(error_msg, is_error=True)
         try:
-            # 尝试向客户端发送错误信息
             if not writer.is_closing():
                 error_response = json.dumps({"status": "error", "message": str(e)})
                 writer.write(error_response.encode("utf-8"))
@@ -140,19 +85,13 @@ async def handle_client_connection(
         except Exception as write_err:
             log_server(f"向客户端发送错误通知时失败: {write_err}", is_error=True)
     finally:
-        if proc and proc.returncode is None:
-            proc.kill()
-            await proc.wait()
-            log_server(f"强制终止了子进程 [PID: {proc.pid}]", is_error=True)
-
         if writer and not writer.is_closing():
             try:
-                # 确保在关闭前所有数据都已发送
                 if writer.can_write_eof():
                     writer.write_eof()
                 await writer.drain()
             except ConnectionError:
-                pass  # 忽略在关闭时可能发生的连接错误
+                pass
             finally:
                 writer.close()
                 await writer.wait_closed()
@@ -169,11 +108,9 @@ async def run_tcp_server(port: int, stop_event: asyncio.Event):
         async with server:
             stop_waiter = asyncio.create_task(stop_event.wait())
             serve_task = asyncio.create_task(server.serve_forever())
-            # 等待停止信号或服务器自身任务结束
             done, pending = await asyncio.wait(
                 {stop_waiter, serve_task}, return_when=asyncio.FIRST_COMPLETED
             )
-            # 取消所有仍在运行的挂起任务
             for task in pending:
                 task.cancel()
             await asyncio.gather(*pending, return_exceptions=True)

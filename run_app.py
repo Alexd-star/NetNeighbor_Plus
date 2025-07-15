@@ -28,6 +28,61 @@ def show_exception_box(exception_type, exception_value, exception_traceback):
 
 
 if __name__ == "__main__":
+    # 在Windows上，确保子进程也不会显示控制台窗口
+    if sys.platform == "win32":
+        # 设置默认的subprocess创建标志，影响所有子进程
+        import subprocess
+
+        subprocess._subprocess_main = getattr(subprocess, "_subprocess_main", None)
+
+        # 保存原始的Popen类
+        original_popen = subprocess.Popen
+
+        # 创建一个新的Popen类，自动添加CREATE_NO_WINDOW标志
+        class NoConsoleWindowPopen(original_popen):
+            def __init__(self, *args, **kwargs):
+                if "creationflags" not in kwargs:
+                    kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
+                super().__init__(*args, **kwargs)
+
+        # 替换原始的Popen类
+        subprocess.Popen = NoConsoleWindowPopen
+
+    if getattr(sys, "frozen", False):
+        # 打包后的应用，重定向输出到文件（静默模式）
+        try:
+            import os
+            import datetime
+
+            # 创建日志目录
+            log_dir = os.path.join(os.path.expanduser("~"), ".netneighbor")
+            os.makedirs(log_dir, exist_ok=True)
+
+            # 重定向到日志文件
+            log_file = os.path.join(log_dir, "app.log")
+
+            # 使用文件作为标准输出，但不显示控制台
+            log_handle = open(log_file, "w", encoding="utf-8")
+            sys.stdout = log_handle
+            sys.stderr = log_handle
+
+            # 写入启动信息
+            print(f"邻里+ 启动时间: {datetime.datetime.now()}")
+            print("=" * 60)
+            print(f"系统平台: {sys.platform}")
+            print(f"Python版本: {sys.version}")
+            print("=" * 60)
+
+        except Exception as e:
+            # 如果文件日志也失败，就完全静默运行
+            import os
+
+            null_device = os.devnull
+            sys.stdout = open(null_device, "w")
+            sys.stderr = sys.stdout
+    else:
+        print("开发环境，使用标准输出")
+
     sys._excepthook = sys.excepthook
 
     def exception_hook(exception_type, exception_value, exception_traceback):

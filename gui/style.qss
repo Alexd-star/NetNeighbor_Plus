@@ -170,6 +170,23 @@ QProgressBar::chunk {
     margin: 0.5px;
 }
 
+QMessageBox {
+    background-color: #f0f0f0;
+    border: 1px solid #ccc;
+    border-radius: 8px;
+    font-size: 14px;
+}
+
+QMessageBox QLabel {
+    color: #333;
+    padding: 10px;
+}
+
+QMessageBox QPushButton {
+    min-width: 80px;
+    padding: 6px 12px;
+}
+
 
 #WelcomeCardFrame {
     background-color: #f5f5f5;

@@ -16,36 +16,28 @@ class ShareModel:
         self._load_shares()
 
     def _load_shares(self) -> None:
-        """从配置文件加载共享文件夹"""
         self._shares = load_config().get("shares", [])
 
     def reload_shares(self) -> None:
-        """重新加载共享文件夹并通知回调"""
-        # 只有在需要强制重载时才使用force_reload=True
         self._shares = load_config(force_reload=True).get("shares", [])
         self._notify_shares_changed()
 
     def get_shares(self) -> List[Dict[str, Any]]:
-        """获取所有共享文件夹"""
         return self._shares.copy()
 
     def get_share_by_name(self, name: str) -> Optional[Dict[str, Any]]:
-        """根据名称获取共享文件夹"""
         for share in self._shares:
             if share.get("name") == name:
                 return share.copy()
         return None
 
     def has_shares(self) -> bool:
-        """检查是否有共享文件夹"""
         return len(self._shares) > 0
 
     def get_share_count(self) -> int:
-        """获取共享文件夹数量"""
         return len(self._shares)
 
     def on_shares_changed(self, callback: Callable[[], None]) -> None:
-        """注册共享文件夹变化回调"""
         self._on_shares_changed_callbacks.append(callback)
 
     def _notify_shares_changed(self) -> None:

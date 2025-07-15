@@ -172,10 +172,45 @@ class ConnectionPresenter(QObject):
 
     def setup_local_websocket(self, port: int):
         """设置本地WebSocket连接"""
-        ws_uri = f"ws://127.0.0.1:{port}/ws/events"
-        self.ws_local_thread = WebSocketClientThread(ws_uri, "local")
-        self.ws_local_thread.message_received.connect(self._handle_websocket_message)
-        self.ws_local_thread.start()
+        try:
+            print(f"设置本地WebSocket连接，端口: {port}")
+
+            # 停止已有的本地WebSocket线程
+            if self.ws_local_thread and self.ws_local_thread.isRunning():
+                print("停止现有的WebSocket连接")
+                self.ws_local_thread.stop()
+                self.ws_local_thread.wait(2000)  # 等待最多2秒
+
+            ws_uri = f"ws://127.0.0.1:{port}/ws/events"
+            print(f"创建WebSocket连接: {ws_uri}")
+
+            self.ws_local_thread = WebSocketClientThread(ws_uri, "local")
+            self.ws_local_thread.message_received.connect(
+                self._handle_websocket_message
+            )
+            self.ws_local_thread.start()
+
+            print("WebSocket线程已启动")
+
+        except Exception as e:
+            print(f"设置本地WebSocket连接失败: {e}")
+            import traceback
+
+            traceback.print_exc()
+
+    def _write_debug_log(self, message):
+        """写入调试日志到文件"""
+        try:
+            import os
+            import datetime
+
+            log_file = os.path.join(os.path.expanduser("~"), "netneighbor_debug.log")
+            with open(log_file, "a", encoding="utf-8") as f:
+                timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                f.write(f"[{timestamp}] ConnectionPresenter: {message}\n")
+                f.flush()
+        except:
+            pass  # 忽略日志写入错误
 
     def _handle_websocket_message(self, message: str, source: str):
         """处理WebSocket消息"""
@@ -183,21 +218,51 @@ class ConnectionPresenter(QObject):
             data = json.loads(message)
             event = data.get("event")
 
+            print(f"WebSocket消息: {event} (来源: {source})")
+            self._write_debug_log(f"收到WebSocket消息: {event} (来源: {source})")
+
             # 处理连接和断开事件
             if event == "ws_local_connected":
                 self.log_model.add_log("已连接到本地WebSocket服务", "🔌")
+                print("本地WebSocket连接成功")
+                self._write_debug_log("✅ 本地WebSocket连接成功")
             elif event == "ws_remote_connected":
                 self.log_model.add_log("已连接到远程WebSocket服务", "🔌")
+                print("远程WebSocket连接成功")
+                self._write_debug_log("✅ 远程WebSocket连接成功")
             elif event == "ws_local_disconnected":
                 self.log_model.add_log("本地WebSocket连接已断开", "🔌")
+                print("本地WebSocket连接断开")
+                self._write_debug_log("❌ 本地WebSocket连接断开")
             elif event == "ws_remote_disconnected":
                 self.log_model.add_log("远程WebSocket连接已断开", "🔌")
+                print("远程WebSocket连接断开")
+                self._write_debug_log("❌ 远程WebSocket连接断开")
+            elif event == "ws_local_failed":
+                self.log_model.add_log("本地WebSocket连接失败", "❌")
+                print("本地WebSocket连接失败")
+                self._write_debug_log("❌ 本地WebSocket连接失败")
+            elif event == "ws_remote_failed":
+                self.log_model.add_log("远程WebSocket连接失败", "❌")
+                print("远程WebSocket连接失败")
+                self._write_debug_log("❌ 远程WebSocket连接失败")
 
             # 转发消息给回调函数
             if self._on_websocket_message_callback:
                 self._on_websocket_message_callback(data, event, source)
-        except json.JSONDecodeError:
-            pass
+        except json.JSONDecodeError as e:
+            error_msg = f"WebSocket消息解析失败: {e}, 消息: {message}"
+            print(error_msg)
+            self._write_debug_log(error_msg)
+        except Exception as e:
+            error_msg = f"处理WebSocket消息时出错: {e}"
+            print(error_msg)
+            self._write_debug_log(error_msg)
+            import traceback
+
+            traceback_str = traceback.format_exc()
+            print(traceback_str)
+            self._write_debug_log(f"WebSocket消息处理异常堆栈: {traceback_str}")
 
     def disconnect_device(self):
         """断开设备连接"""

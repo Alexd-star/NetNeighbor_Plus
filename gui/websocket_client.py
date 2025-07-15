@@ -24,15 +24,29 @@ class WebSocketClientThread(QThread):
 
     async def listen(self):
         """异步监听 WebSocket 消息的核心循环。"""
-        while self._is_running:
+        connection_attempts = 0
+        max_attempts = 3
+
+        while self._is_running and connection_attempts < max_attempts:
             try:
-                connect_kwargs = {"open_timeout": 5, "close_timeout": 5}
+                print(
+                    f"WebSocket ({self.source}) 尝试连接到 {self.uri} (第{connection_attempts + 1}次)"
+                )
+                connect_kwargs = {
+                    "open_timeout": 10,  # 增加超时时间
+                    "close_timeout": 5,
+                    "ping_interval": 20,
+                    "ping_timeout": 10,
+                }
+
                 async with websockets.connect(self.uri, **connect_kwargs) as ws:
                     print(f"WebSocket ({self.source}) 已连接到 {self.uri}")
+                    connection_attempts = 0  # 重置连接尝试次数
                     self.message_received.emit(
                         json.dumps({"event": f"ws_{self.source}_connected"}),
                         self.source,
                     )
+
                     while self._is_running:
                         try:
                             msg = await asyncio.wait_for(ws.recv(), timeout=1.0)
@@ -43,19 +57,35 @@ class WebSocketClientThread(QThread):
                             if self._is_running:
                                 print(f"WebSocket ({self.source}) 连接已关闭。")
                             break
+                        except Exception as recv_e:
+                            print(f"WebSocket ({self.source}) 接收消息错误: {recv_e}")
+                            break
+
             except asyncio.CancelledError:
+                print(f"WebSocket ({self.source}) 连接被取消")
                 break
             except Exception as e:
+                connection_attempts += 1
                 if self._is_running:
-                    print(f"WebSocket ({self.source}) 连接错误: {e}。5秒后重连...")
-                    self.message_received.emit(
-                        json.dumps({"event": f"ws_{self.source}_disconnected"}),
-                        self.source,
-                    )
-                    for _ in range(50):
-                        if not self._is_running:
-                            break
-                        await asyncio.sleep(0.1)
+                    print(f"WebSocket ({self.source}) 连接错误: {e}")
+                    if connection_attempts >= max_attempts:
+                        print(f"WebSocket ({self.source}) 达到最大重连次数，停止尝试")
+                        self.message_received.emit(
+                            json.dumps({"event": f"ws_{self.source}_failed"}),
+                            self.source,
+                        )
+                        break
+                    else:
+                        print(f"WebSocket ({self.source}) 将在3秒后重连...")
+                        self.message_received.emit(
+                            json.dumps({"event": f"ws_{self.source}_disconnected"}),
+                            self.source,
+                        )
+                        # 等待3秒后重连
+                        for _ in range(30):
+                            if not self._is_running:
+                                break
+                            await asyncio.sleep(0.1)
 
     def run(self):
         """QThread的入口点, 设置并运行asyncio事件循环。"""

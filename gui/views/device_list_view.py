@@ -11,11 +11,6 @@ from PySide6.QtWidgets import QListWidget, QListWidgetItem, QWidget, QVBoxLayout
 
 
 def natural_sort_key(s: str) -> list:
-    """
-    为字符串生成一个可用于自然排序的键。
-    例如，'v10' 会被转换为 ['v', 10]，'v2' 会被转换为 ['v', 2]。
-    这样在比较时，10 会被正确地识别为大于 2。
-    """
     result = []
     parts = re.split(r"(\d+)", s)
     for part in parts:
@@ -34,17 +29,12 @@ class DeviceListView(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._setup_ui()
-
-        # 设备项缓存，避免重复创建
-        self._device_items = {}  # service_name -> QListWidgetItem
+        self._device_items = {}
         self._update_pending = False
 
     def _setup_ui(self):
-        """设置UI组件"""
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 10, 0, 0)
-
-        # 标题
         title_label = QLabel("<h4>在线设备</h4>")
         layout.addWidget(title_label)
 

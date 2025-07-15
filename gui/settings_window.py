@@ -371,7 +371,8 @@ class SettingsWindow(QDialog):
 
             # 更新控制器中的运行时配置
             self.controller.running_config = self.config_data_copy
-            self.controller.reload_shares()
+            # reload_shares 方法在 ShareModel 中，不在 AppController 中
+            # 这里不需要调用，因为配置已经更新，ShareModel 会自动重新加载
 
             # 提示用户某些设置需要重启才能生效
             QMessageBox.information(

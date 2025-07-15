@@ -15,9 +15,7 @@ from .event_bus import bus
 
 
 online_devices = {}
-# 防抖机制：记录最后一次事件发布时间
 _last_event_times = {}
-# 设备信息处理队列和线程池 - 增加线程数提高并发处理能力
 _device_info_queue = queue.Queue()
 _device_info_executor = ThreadPoolExecutor(
     max_workers=20, thread_name_prefix="DeviceInfo"
@@ -29,7 +27,6 @@ _discovery_running = False
 def _should_publish_event(
     event_type: str, name: str, debounce_time: float = 0.01
 ) -> bool:
-    """检查是否应该发布事件（减少防抖时间提高响应速度）"""
     current_time = time.time()
     event_key = f"{event_type}:{name}"
 
@@ -44,7 +41,6 @@ def _should_publish_event(
 def _process_device_info_async(
     zeroconf: Zeroconf, service_type: str, name: str, online_time: float = None
 ):
-    """异步处理设备信息获取 - 利用操作系统事件机制优化"""
     try:
         info = zeroconf.get_service_info(service_type, name)
         if info and info.addresses and info.port is not None:
@@ -61,10 +57,15 @@ def _process_device_info_async(
                     else {}
                 )
 
+                # 创建设备唯一标识符：IP地址+端口
+                # 这样即使同一台机器上有多个实例，也能区分它们
+                device_id = f"{address}:{port}"
+
                 device_data = {
                     "address": address,
                     "port": port,
                     "properties": properties,
+                    "device_id": device_id,  # 添加设备唯一标识符
                 }
 
                 # 检查设备是否已存在且信息未变化
@@ -131,6 +132,20 @@ def _device_info_worker():
 class DiscoveryListener:
     """zeroconf的监听器，利用操作系统事件机制实现高效设备发现。"""
 
+    def _write_debug_log(self, message):
+        """写入调试日志到文件"""
+        try:
+            import os
+            import datetime
+
+            log_file = os.path.join(os.path.expanduser("~"), "netneighbor_debug.log")
+            with open(log_file, "a", encoding="utf-8") as f:
+                timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                f.write(f"[{timestamp}] DiscoveryListener: {message}\n")
+                f.flush()
+        except:
+            pass  # 忽略日志写入错误
+
     def remove_service(self, zeroconf: Zeroconf, type_: str, name: str) -> None:
         """设备下线事件处理 - 利用操作系统网络事件"""
         friendly_name = name.split("._netneighbor._tcp.local.")[0]
@@ -163,17 +178,22 @@ class DiscoveryListener:
         """设备上线事件处理 - 利用操作系统网络事件机制"""
         global _discovery_running
 
+        self._write_debug_log(f"🔍 发现新设备: {name}")
+
         if not _discovery_running:
+            self._write_debug_log("设备发现服务未运行，忽略设备")
             return
 
         # 记录设备上线时间，用于性能统计
         import time
 
         online_time = time.time()
+        self._write_debug_log(f"设备 {name} 上线时间: {online_time}")
 
         # 利用操作系统事件机制，直接加入高优先级处理队列
         # 移除队列大小检查以提高响应速度
         _device_info_queue.put((zeroconf, type_, name, online_time))
+        self._write_debug_log(f"设备 {name} 已加入处理队列")
 
 
 class DiscoveryService:
@@ -188,18 +208,53 @@ class DiscoveryService:
         self.service_info = None
         self.browser = None
 
+    def _write_debug_log(self, message):
+        """写入调试日志到文件"""
+        try:
+            import os
+            import datetime
+
+            log_file = os.path.join(os.path.expanduser("~"), "netneighbor_debug.log")
+            with open(log_file, "a", encoding="utf-8") as f:
+                timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                f.write(f"[{timestamp}] DiscoveryService: {message}\n")
+                f.flush()
+        except:
+            pass  # 忽略日志写入错误
+
     def start(self):
         """启动设备发现服务"""
         global _discovery_running, _discovery_thread
 
-        # 启动设备信息处理线程
-        _discovery_running = True
-        _discovery_thread = threading.Thread(target=_device_info_worker, daemon=True)
-        _discovery_thread.start()
+        try:
+            self._write_debug_log("=== 开始启动设备发现服务 ===")
 
-        self._register_service()
-        self._browse_services()
-        print("设备发现服务已启动...")
+            # 启动设备信息处理线程
+            _discovery_running = True
+            _discovery_thread = threading.Thread(
+                target=_device_info_worker, daemon=True
+            )
+            _discovery_thread.start()
+            self._write_debug_log("设备信息处理线程已启动")
+
+            self._register_service()
+            self._write_debug_log("服务注册完成")
+
+            self._browse_services()
+            self._write_debug_log("服务浏览器启动完成")
+
+            print("设备发现服务已启动...")
+            self._write_debug_log("=== 设备发现服务启动完成 ===")
+
+        except Exception as e:
+            error_msg = f"启动设备发现服务时出错: {e}"
+            print(error_msg)
+            self._write_debug_log(error_msg)
+            import traceback
+
+            traceback_str = traceback.format_exc()
+            self._write_debug_log(f"设备发现服务启动异常堆栈: {traceback_str}")
+            raise
 
     def stop(self):
         """停止设备发现服务"""
@@ -224,18 +279,78 @@ class DiscoveryService:
             self.zeroconf.close()
 
     def _register_service(self):
-        full_service_name = f"{self.service_name}.{self.SERVICE_TYPE}"
-        self.service_info = ServiceInfo(
-            self.SERVICE_TYPE,
-            full_service_name,
-            addresses=[socket.inet_aton(self.host_ip)],
-            port=self.port,
-            properties=self.service_properties,
-        )
-        self.zeroconf.register_service(self.service_info)
-        print(f"服务 '{self.service_name}' 已注册。")
+        try:
+            full_service_name = f"{self.service_name}.{self.SERVICE_TYPE}"
+            self._write_debug_log(f"准备注册服务: {full_service_name}")
+            self._write_debug_log(f"服务参数: IP={self.host_ip}, 端口={self.port}")
+            self._write_debug_log(f"服务属性: {self.service_properties}")
+
+            # 检查IP地址是否为局域网IP
+            is_lan_ip = (
+                self.host_ip.startswith("192.168.")
+                or self.host_ip.startswith("10.")
+                or (
+                    self.host_ip.startswith("172.")
+                    and 16 <= int(self.host_ip.split(".")[1]) <= 31
+                )
+            )
+
+            if not is_lan_ip:
+                self._write_debug_log(
+                    f"警告: 当前IP {self.host_ip} 不是局域网IP，可能是VPN接口"
+                )
+                # 尝试获取局域网IP
+                try:
+                    from gui.models.connection_model import ConnectionModel
+
+                    lan_ip = ConnectionModel.get_my_ip()
+                    if lan_ip != self.host_ip:
+                        self._write_debug_log(
+                            f"使用局域网IP {lan_ip} 替代 {self.host_ip}"
+                        )
+                        self.host_ip = lan_ip
+                except Exception as e:
+                    self._write_debug_log(f"获取局域网IP失败: {e}")
+
+            self.service_info = ServiceInfo(
+                self.SERVICE_TYPE,
+                full_service_name,
+                addresses=[socket.inet_aton(self.host_ip)],
+                port=self.port,
+                properties=self.service_properties,
+            )
+            self._write_debug_log("ServiceInfo 对象创建成功")
+
+            self.zeroconf.register_service(self.service_info)
+            print(f"服务 '{self.service_name}' 已注册。")
+            self._write_debug_log(f"✅ 服务 '{self.service_name}' 注册成功")
+
+        except Exception as e:
+            error_msg = f"注册服务时出错: {e}"
+            print(error_msg)
+            self._write_debug_log(error_msg)
+            import traceback
+
+            traceback_str = traceback.format_exc()
+            self._write_debug_log(f"服务注册异常堆栈: {traceback_str}")
+            raise
 
     def _browse_services(self):
-        self.browser = ServiceBrowser(
-            self.zeroconf, self.SERVICE_TYPE, DiscoveryListener()
-        )
+        try:
+            self._write_debug_log(f"准备启动服务浏览器，监听类型: {self.SERVICE_TYPE}")
+
+            self.browser = ServiceBrowser(
+                self.zeroconf, self.SERVICE_TYPE, DiscoveryListener()
+            )
+
+            self._write_debug_log("✅ 服务浏览器启动成功")
+
+        except Exception as e:
+            error_msg = f"启动服务浏览器时出错: {e}"
+            print(error_msg)
+            self._write_debug_log(error_msg)
+            import traceback
+
+            traceback_str = traceback.format_exc()
+            self._write_debug_log(f"服务浏览器启动异常堆栈: {traceback_str}")
+            raise

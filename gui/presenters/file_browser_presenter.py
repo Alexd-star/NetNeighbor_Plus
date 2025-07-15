@@ -7,7 +7,7 @@ import os
 
 from PySide6.QtCore import QPoint
 from PySide6.QtGui import QIcon, QAction
-from PySide6.QtWidgets import QMenu, QMessageBox, QFileDialog
+from PySide6.QtWidgets import QMenu, QMessageBox, QFileDialog, QInputDialog
 
 from gui.models.connection_model import ConnectionModel
 from gui.models.file_model import FileModel
@@ -50,6 +50,7 @@ class FileBrowserPresenter:
         self._on_download_callback = None
         self._on_rename_callback = None
         self._on_delete_callback = None
+        self._on_new_folder_callback = None
 
     def set_icons(
         self,
@@ -211,52 +212,50 @@ class FileBrowserPresenter:
 
     def _on_context_menu_requested(self, pos: QPoint, selected_rows: List[int]):
         """处理右键菜单请求"""
-        if not selected_rows:
-            return
-
         menu = QMenu()
 
-        # 下载选项
-        if self._check_download_permission():
-            download_action = QAction("下载选中项", menu)
-            download_action.setObjectName("ContextMenuAction")
-            # 添加下载图标
-            download_action.setIcon(self.view.download_icon)
-            download_action.triggered.connect(self._on_download_clicked)
-            menu.addAction(download_action)
+        # 新建文件夹选项 (始终显示)
+        new_folder_action = QAction("新建文件夹", menu)
+        new_folder_action.setIcon(self.view.folder_icon)
+        new_folder_action.triggered.connect(self._on_new_folder_clicked)
+        menu.addAction(new_folder_action)
+        menu.addSeparator()
 
-        # 只有一个选中项时才显示重命名选项
-        if len(selected_rows) == 1 and self.share_model.has_permission("rename"):
-            rename_action = QAction("重命名", menu)
-            rename_action.setObjectName("ContextMenuAction")
-            # 添加重命名图标
-            rename_action.setIcon(
-                self.view.style().standardIcon(
-                    self.view.style().StandardPixmap.SP_FileDialogDetailedView
+        if selected_rows:
+            # 下载选项
+            if self._check_download_permission():
+                download_action = QAction("下载选中项", menu)
+                download_action.setIcon(self.view.download_icon)
+                download_action.triggered.connect(self._on_download_clicked)
+                menu.addAction(download_action)
+
+            # 只有一个选中项时才显示重命名选项
+            if len(selected_rows) == 1 and self.share_model.has_permission("rename"):
+                rename_action = QAction("重命名", menu)
+                rename_action.setIcon(
+                    self.view.style().standardIcon(
+                        self.view.style().StandardPixmap.SP_FileDialogDetailedView
+                    )
                 )
-            )
-            rename_action.triggered.connect(
-                lambda: self._on_rename_clicked(selected_rows[0])
-            )
-            menu.addAction(rename_action)
-
-        # 删除选项
-        if self.share_model.has_permission("delete"):
-            delete_action = QAction("删除选中项", menu)
-            delete_action.setObjectName("ContextMenuAction")
-            # 添加删除图标
-            delete_action.setIcon(
-                self.view.style().standardIcon(
-                    self.view.style().StandardPixmap.SP_TrashIcon
+                rename_action.triggered.connect(
+                    lambda: self._on_rename_clicked(selected_rows[0])
                 )
-            )
-            delete_action.triggered.connect(
-                lambda: self._on_delete_clicked(selected_rows)
-            )
-            menu.addAction(delete_action)
+                menu.addAction(rename_action)
 
-        if not menu.isEmpty():
-            menu.exec(pos)
+            # 删除选项
+            if self.share_model.has_permission("delete"):
+                delete_action = QAction("删除选中项", menu)
+                delete_action.setIcon(
+                    self.view.style().standardIcon(
+                        self.view.style().StandardPixmap.SP_TrashIcon
+                    )
+                )
+                delete_action.triggered.connect(
+                    lambda: self._on_delete_clicked(selected_rows)
+                )
+                menu.addAction(delete_action)
+
+        menu.exec(pos)
 
     def _on_rename_clicked(self, row: int):
         """处理重命名操作"""
@@ -414,3 +413,25 @@ class FileBrowserPresenter:
     def on_delete(self, callback: Callable[[List[str], str, str], None]):
         """设置删除回调"""
         self._on_delete_callback = callback
+
+    def _on_new_folder_clicked(self):
+        """处理新建文件夹操作"""
+        if not self._check_upload_permission():
+            return
+
+        new_name, ok = QInputDialog.getText(
+            self.view, "新建文件夹", "请输入文件夹名称:"
+        )
+        if not ok or not new_name:
+            return
+
+        if self._on_new_folder_callback:
+            self._on_new_folder_callback(
+                new_name,
+                self.share_model.get_current_share(),
+                self.share_model.get_current_path(),
+            )
+
+    def on_new_folder(self, callback: Callable[[str, str, str], None]):
+        """设置新建文件夹回调"""
+        self._on_new_folder_callback = callback

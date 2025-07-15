@@ -68,8 +68,9 @@ class TcpDownloader:
 
 class TarUploader:
     """
-    一个实现了文件夹打包为tar流的上传器。
+    一个实现了文件夹打包为tar流的通用工具。
     它负责将整个文件夹打包为tar格式，并提供流式读取接口。
+    这个类既可以用于上传（客户端），也可以被TCP服务器用来创建下载流（服务端）。
     """
 
     def __init__(
@@ -78,12 +79,15 @@ class TarUploader:
         progress_callback: Optional[Callable[[int], None]] = None,
         chunk_size: int = 65536,  # 64KB
     ):
+        if not os.path.isdir(folder_path):
+            raise ValueError(f"提供的路径不是一个有效的文件夹: {folder_path}")
+
         self.folder_path = folder_path
         self.progress_callback = progress_callback
         self.chunk_size = chunk_size
         self.total_size = self._calculate_total_size()
 
-        # 创建管道用于流式处理
+        # 创建一个内存中的管道，用于线程间的流式数据交换
         self.read_pipe, self.write_pipe = os.pipe()
         self.tar_thread = None
         self._start_tar_thread()
@@ -91,11 +95,14 @@ class TarUploader:
     def _calculate_total_size(self):
         """计算文件夹中所有文件的总大小"""
         total = 0
-        for root, _, files in os.walk(self.folder_path):
-            for file in files:
-                file_path = os.path.join(root, file)
-                if os.path.isfile(file_path):
-                    total += os.path.getsize(file_path)
+        try:
+            for root, _, files in os.walk(self.folder_path):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    if os.path.isfile(file_path):
+                        total += os.path.getsize(file_path)
+        except Exception as e:
+            print(f"计算文件夹 '{self.folder_path}' 大小时出错: {e}")
         return total
 
     def _start_tar_thread(self):
@@ -103,25 +110,30 @@ class TarUploader:
 
         def tar_worker():
             try:
+                # 使用 os.fdopen 将文件描述符包装成文件对象，确保二进制写入
                 with os.fdopen(self.write_pipe, "wb") as write_pipe:
+                    # 使用无压缩的流模式 'w|'
                     with tarfile.open(
                         fileobj=write_pipe, mode="w|", format=tarfile.GNU_FORMAT
                     ) as tar:
-                        # 添加文件夹到tar
                         folder_name = os.path.basename(self.folder_path)
                         tar.add(self.folder_path, arcname=folder_name, recursive=True)
             except Exception as e:
-                print(f"Tar打包过程出错: {e}")
+                error_message = f"Tar打包过程出错: {e}".encode("utf-8")
+                try:
+                    os.write(self.write_pipe, error_message)
+                except Exception:
+                    pass
+            finally:
+                pass
 
-        # 启动打包线程
         self.tar_thread = threading.Thread(target=tar_worker)
         self.tar_thread.daemon = True
         self.tar_thread.start()
 
     def read(self, size: int = -1) -> bytes:
-        """读取指定大小的数据块"""
+        """从管道读取指定大小的数据块，供上传或下载流使用"""
         try:
-            # 从管道读取数据
             chunk = os.read(self.read_pipe, self.chunk_size if size <= 0 else size)
             if self.progress_callback and chunk:
                 self.progress_callback(len(chunk))
@@ -130,10 +142,16 @@ class TarUploader:
             print(f"读取tar数据时出错: {e}")
             return b""
 
+    def __iter__(self):
+        """使这个类的实例可以被迭代"""
+        while True:
+            chunk = self.read()
+            if not chunk:
+                break
+            yield chunk
+
     def __len__(self):
-        """返回tar文件的总大小（估计值）"""
-        # 由于流式处理，无法精确知道tar的大小，返回原始文件大小的估计值
-        # tar格式会有一些额外的头信息，所以增加10%作为估计
+        """返回tar文件的估计总大小"""
         return int(self.total_size * 1.1)
 
     def __enter__(self):
@@ -141,17 +159,18 @@ class TarUploader:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         """确保资源被正确释放"""
+        self.close()
+
+    def close(self):
+        """关闭管道和线程"""
         try:
-            # 关闭读取管道
             if hasattr(self, "read_pipe") and self.read_pipe is not None:
                 os.close(self.read_pipe)
                 self.read_pipe = None
-
-            # 等待tar线程完成
             if self.tar_thread and self.tar_thread.is_alive():
-                self.tar_thread.join(1.0)  # 等待最多1秒
+                self.tar_thread.join(timeout=1.0)
         except Exception as e:
-            print(f"关闭TarUploader资源时出错: {e}")
+            print(f"关闭 TarUploader 资源时出错: {e}")
 
 
 class UploadStreamer:
@@ -325,16 +344,17 @@ class ApiClient:
         except Exception:
             return False
 
-    def create_directory(self, share_name: str, path: str) -> bool:
+    def create_directory(self, share_name: str, path: str, dir_name: str) -> bool:
         """在远程创建目录"""
         url = f"{self.base_url}/api/v1/create_dir/{share_name}"
-        params = {"path": path}
+        params = {"path": path, "dir_name": dir_name}
         try:
-            response = self.client.post(url, params=params, timeout=5.0)
+            response = self.client.post(url, params=params, timeout=10.0)
             response.raise_for_status()
             return True
         except Exception as e:
             print(f"创建目录失败: {e}")
+            # 可以在这里根据 response.status_code 给出更具体的错误信息
             return False
 
     def notify_shares_changed(self) -> bool:
@@ -363,17 +383,34 @@ class ApiClient:
     def download_folder_tcp(self, share_name: str, remote_path: str) -> TcpDownloader:
         """连接到对方的高速TCP传输服务。"""
         host = self.base_url.split("//")[1].split(":")[0]
+        http_port = int(self.base_url.split("//")[1].split(":")[1])
 
         peers_data = self.get_peers()
         tcp_port = None
         if peers_data:
             for name, data in peers_data.items():
-                if data["address"] == host:
+                if data["address"] == host and data.get("port") == http_port:
                     tcp_port = int(data.get("properties", {}).get("tcp_port", 0))
+                    print(f"找到精确匹配的设备，TCP端口: {tcp_port}")
                     break
 
+            if not tcp_port:
+                matching_devices = [
+                    data for data in peers_data.values() if data["address"] == host
+                ]
+                if len(matching_devices) == 1:
+                    tcp_port = int(
+                        matching_devices[0].get("properties", {}).get("tcp_port", 0)
+                    )
+                    print(f"找到单一IP匹配设备，TCP端口: {tcp_port}")
+                elif len(matching_devices) > 1:
+                    print(
+                        f"警告：发现{len(matching_devices)}个设备使用相同IP {host}，无法确定正确的TCP端口"
+                    )
+
         if not tcp_port:
-            raise ConnectionError(f"无法找到设备 {host} 的TCP传输端口。")
+            tcp_port = http_port + 1
+            print(f"警告：无法从设备列表获取TCP端口，使用推测端口 {tcp_port}")
 
         request_header = {
             "action": "download_folder",
@@ -381,7 +418,6 @@ class ApiClient:
             "remote_path": remote_path,
         }
 
-        # 返回一个全新的、管理着TCP连接的下载器对象
         return TcpDownloader(host, tcp_port, request_header)
 
     def upload_folder_tar(
@@ -395,7 +431,6 @@ class ApiClient:
         url = f"{self.base_url}/api/v1/upload_folder_tar/{share_name}"
         params = {"dest_path": dest_path, "conflict_action": conflict_action}
 
-        # 使用文件夹名称作为tar文件名
         folder_name = os.path.basename(uploader.folder_path)
         files = {"file": (f"{folder_name}.tar", uploader, "application/x-tar")}
 

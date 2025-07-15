@@ -17,4 +17,7 @@ env/
 # 打包和构建产物
 dist/
 build/
+release/
 *.spec
+*.bat
+*.exe

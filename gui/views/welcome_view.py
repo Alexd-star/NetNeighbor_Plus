@@ -22,13 +22,11 @@ class WelcomeView(QWidget):
         self._setup_ui()
 
     def _setup_ui(self):
-        """设置UI组件"""
         layout = QVBoxLayout(self)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.setSpacing(20)
         layout.setContentsMargins(30, 30, 30, 30)
 
-        # 创建卡片容器
         card = QFrame(self)
         card.setObjectName("WelcomeCardFrame")
         card.setFrameShape(QFrame.Shape.StyledPanel)
@@ -38,14 +36,11 @@ class WelcomeView(QWidget):
         card_layout.setSpacing(15)
         card_layout.setContentsMargins(25, 25, 25, 25)
 
-        # 欢迎标题
         title_layout = QHBoxLayout()
 
-        # 图标
         icon_label = QLabel()
         icon = QPixmap(":/icons/app_icon.png")
         if icon.isNull():
-            # 如果找不到图标资源，使用系统图标
             from PySide6.QtWidgets import QStyle
 
             icon = (
@@ -57,7 +52,6 @@ class WelcomeView(QWidget):
         icon_label.setFixedSize(64, 64)
         title_layout.addWidget(icon_label)
 
-        # 标题文本
         welcome_label = QLabel("欢迎使用 邻里+")
         welcome_label.setObjectName("WelcomeTitle")
         font = QFont()
@@ -70,14 +64,12 @@ class WelcomeView(QWidget):
 
         card_layout.addLayout(title_layout)
 
-        # 分隔线
         separator = QFrame()
         separator.setObjectName("WelcomeSeparator")
         separator.setFrameShape(QFrame.Shape.HLine)
         separator.setFrameShadow(QFrame.Shadow.Sunken)
         card_layout.addWidget(separator)
 
-        # 副标题
         subtitle = QLabel("快速开始使用")
         subtitle.setObjectName("WelcomeSubtitle")
         subtitle_font = QFont()
@@ -86,12 +78,10 @@ class WelcomeView(QWidget):
         subtitle.setFont(subtitle_font)
         card_layout.addWidget(subtitle)
 
-        # 使用说明
         instructions_frame = QFrame()
         instructions_frame.setObjectName("InstructionsFrame")
         instructions_layout = QVBoxLayout(instructions_frame)
 
-        # 步骤1
         step1_layout = QHBoxLayout()
         step1_number = QLabel("1")
         step1_number.setObjectName("Step1Number")
@@ -102,7 +92,6 @@ class WelcomeView(QWidget):
         step1_layout.addWidget(step1_label, 1)
         instructions_layout.addLayout(step1_layout)
 
-        # 步骤2
         step2_layout = QHBoxLayout()
         step2_number = QLabel("2")
         step2_number.setObjectName("Step2Number")
@@ -113,7 +102,6 @@ class WelcomeView(QWidget):
         step2_layout.addWidget(step2_label, 1)
         instructions_layout.addLayout(step2_layout)
 
-        # 步骤3
         step3_layout = QHBoxLayout()
         step3_number = QLabel("3")
         step3_number.setObjectName("Step3Number")
@@ -126,12 +114,10 @@ class WelcomeView(QWidget):
 
         card_layout.addWidget(instructions_frame)
 
-        # 提示信息
         tip_label = QLabel("提示：您也可以通过拖放文件到文件列表区域来快速上传文件")
         tip_label.setObjectName("WelcomeTip")
         card_layout.addWidget(tip_label)
 
-        # 添加卡片到主布局
         layout.addStretch()
         layout.addWidget(card)
         layout.addStretch()
