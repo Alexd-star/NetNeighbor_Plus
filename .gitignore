@@ -18,5 +18,4 @@ env/
 dist/
 build/
 release/
-*.spec
 *.bat
