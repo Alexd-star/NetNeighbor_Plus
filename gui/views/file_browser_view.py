@@ -111,7 +111,11 @@ class FileTableWidget(QTableWidget):
             if check_item:
                 # 切换复选框状态
                 current_state = check_item.checkState()
-                new_state = Qt.CheckState.Checked if current_state == Qt.CheckState.Unchecked else Qt.CheckState.Unchecked
+                new_state = (
+                    Qt.CheckState.Checked
+                    if current_state == Qt.CheckState.Unchecked
+                    else Qt.CheckState.Unchecked
+                )
                 check_item.setCheckState(new_state)
                 # 不调用父类的mousePressEvent，避免双重切换
                 return

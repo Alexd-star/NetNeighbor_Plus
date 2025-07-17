@@ -529,7 +529,9 @@ class TransferManager(QObject):
         except Exception as e:
             print(f"处理冲突对话框时出错: {e}")
             # 设置默认结果并通知工作线程
-            self.worker_thread.conflict_resolver.conflict_resolution_result = {"action": "skip"}
+            self.worker_thread.conflict_resolver.conflict_resolution_result = {
+                "action": "skip"
+            }
             event_obj.set()
 
     def _on_task_cancelled(self, task_index: int):
