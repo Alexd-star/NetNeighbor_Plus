@@ -25,7 +25,7 @@ def main():
             shutil.rmtree(dir_name)
 
     # 检查必要文件
-    required_files = ["run_app.py", "build_config.spec", "icon.ico"]
+    required_files = ["run_app.py", "build_config.spec", "resource/icon.ico"]
     for file_name in required_files:
         if not os.path.exists(file_name):
             print(f"错误: {file_name} 不存在")
@@ -251,7 +251,7 @@ def create_readme():
 
 版本信息
 --------
-版本: 1.0.0
+版本: 3.4.0
 构建时间: 2025年7月
 """
         )

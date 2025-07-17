@@ -1087,7 +1087,7 @@ class MainWindowMVC(QMainWindow):
         QMessageBox.about(
             self,
             "关于 邻里+",
-            """<b>邻里+ (NetNeighbor Plus) v3.3.0</b>
+            """<b>邻里+ (NetNeighbor Plus) v3.4.0</b>
             <p>一款基于局域网的、开源的、跨平台文件共享工具。</p>
             <p><b>核心功能:</b></p>
             <ul>
